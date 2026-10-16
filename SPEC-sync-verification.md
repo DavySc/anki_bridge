@@ -1,6 +1,6 @@
 # Spec: sync-verification (module `sync-verification`)
 
-Status: DRAFT, awaiting review. Part of [CAPABILITY-MAP.md](CAPABILITY-MAP.md).
+Status: APPROVED (no AnkiWeb smoke test, see Open Questions). Part of [CAPABILITY-MAP.md](CAPABILITY-MAP.md).
 Depends on: nothing. Required by: `deploy`.
 
 ## Objective
@@ -11,8 +11,9 @@ real Anki sync server, and fix what the proof shows is wrong. GOALS.md promises
 Today that is only tested with sync switched off.
 
 Success looks like: an offline test suite that runs the real sync protocol against
-a local sync server and passes, plus one manual run against a throwaway AnkiWeb
-account. A failed sync never loses a successful write's result, never leaves
+a local sync server and passes. There is no test against real AnkiWeb (the owner
+has no throwaway account and will not use the real one for tests); the first real
+use is a supervised checklist owned by `deploy`. A failed sync never loses a successful write's result, never leaves
 Claude with an unreadable error, and never does a full upload or download.
 
 Non-goals: media sync, a self-hosted sync server in production, conflict
@@ -41,7 +42,8 @@ this module must close; each becomes a failing test first.
   `update_note` still returns the merged note.
 - H4: `bootstrap.py download` and `upload` work against the local server and
   `server.py` never calls them.
-- H5: login every call is acceptable on AnkiWeb (measured once, manually).
+- H5: login every call is acceptable on AnkiWeb. Cannot be tested offline; stays an
+  open risk, watched during the supervised first use.
 
 ## Tech Stack
 
@@ -64,16 +66,13 @@ play "server side" and "phone" (device B) so conflicts are real.
     Test (all, offline):  python -m pytest -q
     Sync tests only:      python -m pytest -q test_sync.py
     Local server by hand: SYNC_USER1=u:p SYNC_BASE=$(mktemp -d) SYNC_PORT=8091 python -m anki.syncserver
-    AnkiWeb smoke (manual, throwaway account only):
-        ANKIWEB_USER=... ANKIWEB_PASS=... python smoke_ankiweb.py
 
 ## Project Structure
 
     core.py             error mapping, post-write sync failure handling (changes)
     test_sync.py        local-server fixture and sync scenarios (new)
-    smoke_ankiweb.py    one-shot real-AnkiWeb check, prints a report (new)
     bootstrap.py        unchanged unless H4 finds a bug
-    README.md           documents the smoke test and results
+    README.md           documents the sync tests and the first-real-use checklist
 
 ## Required behaviour (what the tests assert)
 
@@ -122,19 +121,22 @@ Match `core.py`: small methods, messages written for Claude, no MCP imports.
   use a wrong password for auth errors, change a note type on device B and sync it
   to force a full-sync requirement.
 - The suite must stay fast (< 30 s) and need no network or account.
-- Manual: `smoke_ankiweb.py` against a throwaway AnkiWeb account, run once and
-  again after any change to `core.py` sync code. Its report is pasted into the
-  README Status. It checks login, no-op sync, add-then-sync, and visibility from a
-  second collection that downloaded the account.
+- No automated test touches real AnkiWeb. Real AnkiWeb is covered by a supervised
+  first-use checklist (README, run in `deploy`): export a backup from Anki desktop,
+  `bootstrap.py download`, a no-change `sync`, then one approved single-note
+  `add_notes`, then confirm it on the phone.
+- Known residual risk: behaviour that only AnkiWeb shows (login rate limits, its
+  timeouts, its full-sync rules) is not covered. H5 stays unanswered.
 
 ## Boundaries
 
 - Always: run sync tests against the local server; use temporary collections;
   keep error messages free of credentials; run the full suite before committing.
-- Ask first: running anything against a real AnkiWeb account, adding a
+- Ask first: running anything against a real AnkiWeb account (never as an automated or
+  test step), adding a
   dependency, changing the shape of a tool result beyond the `sync_after` string,
   caching the sync host key on disk.
-- Never: run the smoke test or any test against the user's real account or
+- Never: run any test against the user's real account or
   collection; call `full_upload_or_download` from `core.py` or `server.py`;
   delete notes; swallow a sync failure without telling the caller.
 
@@ -151,18 +153,17 @@ Match `core.py`: small methods, messages written for Claude, no MCP imports.
       in this spec.
 - [ ] Round trip add and update visible on the second collection.
 - [ ] Existing 114 tests still pass.
-- [ ] `smoke_ankiweb.py` run once on a throwaway AnkiWeb account; report in README;
-      H5 answered.
+- [ ] README has the first-real-use checklist and states that real AnkiWeb is untested
+      (H5 open).
 
 ## Open Questions
 
-1. Do you have a throwaway AnkiWeb account (free, a separate email)? Without one the
-   real-AnkiWeb check is skipped and the local server is the only evidence. I
-   recommend making one; it takes two minutes.
-2. For a failed post-write sync, is returning success with `sync_after: "failed: ..."`
-   the right call, versus raising? I recommend success, because the write happened and
-   the ids must not be lost.
-3. If H5 shows AnkiWeb rate-limits repeated logins, may I cache the host key in memory
-   per process (not on disk)? Recommended, decided only if measurement demands it.
-4. Should a sync get a timeout? A hung AnkiWeb call would block a tool call (and the
-   collection lock). I would measure first and add one only if Anki's own is too long.
+Decided:
+1. No throwaway AnkiWeb account. No real-AnkiWeb test; supervised first use instead.
+2. A failed post-write sync returns success with `sync_after: "failed: ...; run sync"`
+   (approved).
+
+Still open (decided only if evidence demands it):
+3. Cache the sync host key in memory if first real use shows login rate limits.
+4. A timeout on sync calls, if a hung AnkiWeb call proves to block the tool call. Only
+   the refused-connection case is measurable offline.
