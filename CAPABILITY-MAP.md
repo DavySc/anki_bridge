@@ -1,6 +1,6 @@
 # Capability Map: anki-claude-bridge, remaining work
 
-Status: DRAFT, awaiting review. No module spec is written until this is approved.
+Status: APPROVED. Specs: SPEC-auth.md (built), SPEC-sync-verification.md (draft).
 
 The six tools, validation and core tests are done (see README "Status"). Three
 capabilities are left. Each can ship and be verified on its own.
@@ -38,8 +38,9 @@ Build order: `sync-verification` and `auth` (independent, either first) → `dep
    Claude's remote-MCP connector require.
 2. Claude connects as a remote MCP (custom connector) over streamable HTTP,
    including from the phone app.
-3. A throwaway AnkiWeb account is available for `sync-verification`. If not, tests
-   would run against your real account, which changes the risk and the spec.
+3. `sync-verification` runs almost entirely offline against Anki's bundled sync
+   server (`python -m anki.syncserver`). A throwaway AnkiWeb account is only needed
+   for one final manual smoke test; never use your real account.
 4. The VPS runs NixOS or a generic Linux with nix available. This affects
    `deploy` only. Tell me which.
 5. Self-hosted sync server stays out of scope (GOALS.md: "maybe later").
