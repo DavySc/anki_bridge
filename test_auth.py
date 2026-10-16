@@ -145,3 +145,219 @@ def test_owner_authenticator_returns_owner_subject():
     assert auth.authenticate({}) is None
     # username is accepted and ignored today (multi-user seam)
     assert auth.authenticate({"username": "anyone", "secret": "pw"}) == OWNER_SUBJECT
+
+
+# ---- authorize -> login -> code ----------------------------------------------
+
+import time
+from urllib.parse import parse_qs, urlparse
+
+from mcp.server.auth.provider import AuthorizationParams
+from starlette.applications import Starlette
+from starlette.routing import Route
+from starlette.testclient import TestClient
+
+from auth import GLOBAL_FAILURE_LIMIT, LoginLimiter, make_login_handler
+
+REDIRECT = "https://claude.ai/api/mcp/auth_callback"
+SECRET = "correct horse battery"
+
+
+class Clock:
+    def __init__(self):
+        self.t = 1_000_000.0
+
+    def __call__(self):
+        return self.t
+
+
+@pytest.fixture()
+def env():
+    clock = Clock()
+    path = os.path.join(tempfile.mkdtemp(), "auth.sqlite3")
+    prov = OwnerProvider(path, public_url="https://anki.example", now=clock)
+    run(prov.register_client(client()))
+    limiter = LoginLimiter(now=clock)
+    app = Starlette(
+        routes=[
+            Route(
+                "/login",
+                make_login_handler(prov, OwnerAuthenticator(hash_secret(SECRET)), limiter),
+                methods=["GET", "POST"],
+            )
+        ]
+    )
+    tc = TestClient(app, follow_redirects=False, base_url="https://anki.example")
+    return prov, tc, clock, limiter
+
+
+def start(prov, state="xyz", challenge="chal", resource="https://anki.example/mcp"):
+    c = run(prov.get_client("c1"))
+    params = AuthorizationParams(
+        state=state,
+        scopes=[],
+        code_challenge=challenge,
+        redirect_uri=REDIRECT,
+        redirect_uri_provided_explicitly=True,
+        resource=resource,
+    )
+    url = run(prov.authorize(c, params))
+    return url, parse_qs(urlparse(url).query)["req"][0]
+
+
+def test_authorize_points_at_our_login_page(env):
+    prov, _, _, _ = env
+    url, req = start(prov)
+    assert url.startswith("https://anki.example/login?req=")
+    assert len(req) >= 40
+
+
+def test_login_form_renders_and_sets_security_headers(env):
+    prov, tc, _, _ = env
+    _, req = start(prov)
+    r = tc.get("/login", params={"req": req})
+    assert r.status_code == 200 and 'name="secret"' in r.text and req in r.text
+    assert r.headers["cache-control"] == "no-store"
+    assert r.headers["x-frame-options"] == "DENY"
+
+
+def test_right_secret_redirects_to_registered_uri_with_code_and_state(env):
+    prov, tc, _, _ = env
+    _, req = start(prov, state="abc")
+    r = tc.post("/login", data={"req": req, "secret": SECRET})
+    assert r.status_code == 302
+    loc = urlparse(r.headers["location"])
+    assert f"{loc.scheme}://{loc.netloc}{loc.path}" == REDIRECT
+    q = parse_qs(loc.query)
+    assert q["state"] == ["abc"] and len(q["code"][0]) >= 40
+
+
+def test_code_loads_with_subject_challenge_and_resource(env):
+    prov, tc, _, _ = env
+    _, req = start(prov, challenge="CH", resource="https://anki.example/mcp")
+    code = parse_qs(urlparse(tc.post("/login", data={"req": req, "secret": SECRET}).headers["location"]).query)["code"][0]
+    got = run(prov.load_authorization_code(run(prov.get_client("c1")), code))
+    assert got.subject == OWNER_SUBJECT
+    assert got.code_challenge == "CH"
+    assert got.resource == "https://anki.example/mcp"
+    assert str(got.redirect_uri) == REDIRECT and got.redirect_uri_provided_explicitly
+
+
+def test_code_is_bound_to_its_client(env):
+    prov, tc, _, _ = env
+    run(prov.register_client(client(client_id="c2")))
+    _, req = start(prov)
+    code = parse_qs(urlparse(tc.post("/login", data={"req": req, "secret": SECRET}).headers["location"]).query)["code"][0]
+    assert run(prov.load_authorization_code(run(prov.get_client("c2")), code)) is None
+
+
+def test_wrong_secret_never_yields_a_code(env):
+    prov, tc, _, _ = env
+    _, req = start(prov)
+    r = tc.post("/login", data={"req": req, "secret": "nope"})
+    assert r.status_code == 401 and "location" not in r.headers
+    assert prov._exec("SELECT COUNT(*) FROM codes")[0][0] == 0
+    # the pending request survives a typo so the owner can retry
+    assert tc.post("/login", data={"req": req, "secret": SECRET}).status_code == 302
+
+
+def test_sixth_failure_is_rate_limited_even_with_the_right_secret(env):
+    prov, tc, clock, _ = env
+    _, req = start(prov)
+    for _ in range(5):
+        assert tc.post("/login", data={"req": req, "secret": "nope"}).status_code == 401
+    assert tc.post("/login", data={"req": req, "secret": "nope"}).status_code == 429
+    assert tc.post("/login", data={"req": req, "secret": SECRET}).status_code == 429
+    clock.t += 901  # window over (the old login link has expired too, so start again)
+    _, req = start(prov)
+    assert tc.post("/login", data={"req": req, "secret": SECRET}).status_code == 302
+
+
+def test_changing_the_username_does_not_reset_the_limit(env):
+    prov, tc, _, _ = env
+    _, req = start(prov)
+    for i in range(5):
+        tc.post("/login", data={"req": req, "secret": "nope", "username": f"u{i}"})
+    assert tc.post("/login", data={"req": req, "secret": SECRET, "username": "fresh"}).status_code == 429
+
+
+def test_global_limit_covers_rotating_ips():
+    clock = Clock()
+    lim = LoginLimiter(now=clock)
+    for i in range(GLOBAL_FAILURE_LIMIT):
+        lim.fail("global")
+        lim.fail(f"ip:{i}")
+    assert not lim.blocked("ip:1") and lim.blocked("global", GLOBAL_FAILURE_LIMIT)
+
+
+def test_pending_request_is_single_use(env):
+    prov, tc, _, _ = env
+    _, req = start(prov)
+    assert tc.post("/login", data={"req": req, "secret": SECRET}).status_code == 302
+    again = tc.post("/login", data={"req": req, "secret": SECRET})
+    assert again.status_code == 400 and "location" not in again.headers
+
+
+def test_pending_request_expires(env):
+    prov, tc, clock, _ = env
+    _, req = start(prov)
+    clock.t += 601
+    assert tc.get("/login", params={"req": req}).status_code == 400
+    assert tc.post("/login", data={"req": req, "secret": SECRET}).status_code == 400
+
+
+@pytest.mark.parametrize("req", ["", "garbage", "../../etc"])
+def test_unknown_request_id_never_redirects(env, req):
+    _, tc, _, _ = env
+    for r in (tc.get("/login", params={"req": req}), tc.post("/login", data={"req": req, "secret": SECRET})):
+        assert r.status_code == 400 and "location" not in r.headers
+
+
+def test_code_expires_and_is_deletable(env):
+    prov, tc, clock, _ = env
+    c = run(prov.get_client("c1"))
+    _, req = start(prov)
+    code = parse_qs(urlparse(tc.post("/login", data={"req": req, "secret": SECRET}).headers["location"]).query)["code"][0]
+    assert run(prov.load_authorization_code(c, code)) is not None
+    prov._delete_code(code)
+    assert run(prov.load_authorization_code(c, code)) is None
+    _, req = start(prov)
+    code = parse_qs(urlparse(tc.post("/login", data={"req": req, "secret": SECRET}).headers["location"]).query)["code"][0]
+    clock.t += 301
+    assert run(prov.load_authorization_code(c, code)) is None
+
+
+def test_db_holds_no_plaintext_request_id_or_code(env):
+    prov, tc, _, _ = env
+    _, req = start(prov)
+    dump_pending = str(prov._exec("SELECT * FROM pending"))
+    assert req not in dump_pending
+    code = parse_qs(urlparse(tc.post("/login", data={"req": req, "secret": SECRET}).headers["location"]).query)["code"][0]
+    assert code not in str(prov._exec("SELECT * FROM codes"))
+    assert SECRET not in open(prov.path, "rb").read().decode("latin-1")
+
+
+def test_form_escapes_request_id(env):
+    _, tc, _, _ = env
+    r = tc.get("/login", params={"req": '"><script>x</script>'})
+    assert "<script>" not in r.text  # invalid ids get the generic page, never echoed
+
+
+def test_hash_cli_prints_a_verifiable_hash():
+    from auth import main
+
+    line = main(["hash"], prompt=lambda _: "a very long secret")
+    assert line.startswith("OWNER_SECRET_HASH='scrypt$")
+    assert verify_secret("a very long secret", line.split("'")[1])
+
+
+def test_hash_cli_rejects_short_or_mismatched_secrets():
+    from auth import main
+
+    with pytest.raises(SystemExit):
+        main(["hash"], prompt=lambda _: "short")
+    answers = iter(["a very long secret", "different long secret"])
+    with pytest.raises(SystemExit):
+        main(["hash"], prompt=lambda _: next(answers))
+    with pytest.raises(SystemExit):
+        main([])

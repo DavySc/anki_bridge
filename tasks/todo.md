@@ -35,17 +35,17 @@ verify), a per-IP failure limiter (5 / 15 min), and authorization-code issuance
 `load_authorization_code` implemented.
 
 **Acceptance criteria:**
-- [ ] Right secret yields a redirect to the registered redirect_uri with `code` and `state`
-- [ ] Wrong secret never yields a code; 6th failure within 15 min returns 429
-- [ ] Pending request and code are single use and expire (injected clock)
-- [ ] Unknown/expired `req` id never redirects anywhere (no open redirect)
-- [ ] `subject` from the authenticator is stored on the pending request and the code
-- [ ] Rate limiter key is `(username-or-subject, ip)`
-- [ ] Hash helper output verifies against the typed secret; plaintext is never stored or logged
+- [x] Right secret yields a redirect to the registered redirect_uri with `code` and `state`
+- [x] Wrong secret never yields a code; 6th failure within 15 min returns 429
+- [x] Pending request and code are single use and expire (injected clock)
+- [x] Unknown/expired `req` id never redirects anywhere (no open redirect)
+- [x] `subject` from the authenticator is stored on the pending request and the code
+- [x] Rate limiter keys on IP plus a global bucket, not the claimed username
+- [x] Hash helper output verifies against the typed secret; plaintext is never stored or logged
 
 **Verification:**
-- [ ] `python -m pytest -q test_auth.py` passes
-- [ ] Manual: `python auth.py hash` prompts and prints a hash
+- [x] `python -m pytest -q test_auth.py` passes
+- [x] Manual: `python auth.py hash` prompts and prints a hash
 
 **Dependencies:** Task 1
 **Files:** `auth.py`, `test_auth.py`

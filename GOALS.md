@@ -52,7 +52,8 @@ expansion cheap, and cost almost nothing now:
   a `Bridge` is one user's collection, lock and sync credentials.
 - Per-user data lives under one root: `data/<subject>/collection.anki2`
   (today `data/owner/`, with `ANKI_COLLECTION` still overriding the path).
-- Rate limits and logs key on subject plus IP, never on subject alone.
+- Login rate limits key on client IP plus a global bucket, never on the claimed
+  username alone (the attacker chooses it); a per-user key may be added later.
 - Per-user AnkiWeb credentials are not stored yet (env vars). Storing other
   people's AnkiWeb passwords needs encryption at rest and is a decision for
   that later project.
