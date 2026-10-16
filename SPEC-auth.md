@@ -137,20 +137,20 @@ pytest, no network. Drive the provider and the Starlette app in-process
 
 ## Success Criteria
 
-- [ ] Unauthenticated `POST /mcp` returns 401 with a `WWW-Authenticate` header
+- [x] Unauthenticated `POST /mcp` returns 401 with a `WWW-Authenticate` header
       pointing at the protected-resource metadata.
-- [ ] `/.well-known/oauth-authorization-server` and
+- [x] `/.well-known/oauth-authorization-server` and
       `/.well-known/oauth-protected-resource` are served with the public URL.
-- [ ] Full flow test passes: register, authorize, login, token, tool call,
+- [x] Full flow test passes: register, authorize, login, token, tool call,
       refresh, revoke.
-- [ ] Wrong owner secret never yields a code; 6th attempt in 15 min is 429.
-- [ ] Server refuses to start without auth config (and with the insecure flag on
+- [x] Wrong owner secret never yields a code; 6th attempt in 15 min is 429.
+- [x] Server refuses to start without auth config (and with the insecure flag on
       a non-loopback host).
-- [ ] DB contains no plaintext tokens, codes or owner secret (asserted in a test). Exception: DCR `client_secret` is stored as given, because the SDK compares it directly; it is a client credential, not a grant.
-- [ ] Tokens issued to a second subject (test-only authenticator) resolve to a different `bridge_for` result and cannot read or revoke the owner's tokens.
-- [ ] A tool call with no subject in context fails closed under auth.
-- [ ] All existing `test_core.py` tests still pass unchanged.
-- [ ] README "Status" updated; GOALS.md "Auth ... Still to be built" updated.
+- [x] DB contains no plaintext tokens, codes or owner secret and no client secret (asserted in tests). Client secrets are derived from a server key, which is derived from the owner secret hash, and recomputed on demand.
+- [x] Tokens issued to a second subject (test-only authenticator) resolve to a different `bridge_for` result and cannot read or revoke the owner's tokens.
+- [x] A tool call with no subject in context fails closed under auth.
+- [x] All existing `test_core.py` tests still pass unchanged.
+- [x] README "Status" updated; GOALS.md "Auth ... Still to be built" updated.
 
 ## Findings during build
 

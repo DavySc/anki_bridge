@@ -12,7 +12,9 @@ import sys
 
 from anki.collection import Collection
 
-path = os.environ.get("ANKI_COLLECTION", "./data/collection.anki2")
+path = os.environ.get("ANKI_COLLECTION") or os.path.join(
+    os.environ.get("DATA_DIR", "./data"), "owner", "collection.anki2"
+)  # same default as server.py
 direction = sys.argv[1] if len(sys.argv) > 1 else ""
 if direction not in ("download", "upload"):
     sys.exit("usage: bootstrap.py download|upload")

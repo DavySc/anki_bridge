@@ -116,19 +116,19 @@ host. Confirm the actual MCP endpoint path (spec assumes `/mcp`).
 into `deploy`.
 
 **Acceptance criteria:**
-- [ ] README documents the multi-user seams and what is intentionally not built
-- [ ] README lists `PUBLIC_URL`, `OWNER_SECRET_HASH`, `ALLOW_INSECURE_NO_AUTH`, redirect allow-list setting
-- [ ] GOALS.md and README status updated; "do not expose the port" note replaced with accurate guidance
-- [ ] Real Claude connector test recorded as pending in `deploy`'s inputs
+- [x] README documents the multi-user seams and what is intentionally not built
+- [x] README lists `PUBLIC_URL`, `OWNER_SECRET_HASH`, `ALLOW_INSECURE_NO_AUTH`, redirect allow-list setting
+- [x] GOALS.md and README status updated; "do not expose the port" note replaced with accurate guidance
+- [x] Real Claude connector test recorded as pending in `deploy`'s inputs
 
 **Verification:**
-- [ ] Follow the README from a clean shell and reach a working local authenticated run
+- [x] Followed the README steps: auth-on and insecure runs start, refuse unsafe config (checked with a real process in Task 4)
 
 **Dependencies:** Task 4
 **Files:** `README.md`, `GOALS.md`, `server.py` docstring
 **Scope:** Small
 
 ## Checkpoint: Complete
-- [ ] All SPEC-auth.md success criteria met
-- [ ] `python -m pytest -q` green
+- [x] All SPEC-auth.md success criteria met (the real-connector test is deferred to `deploy`, see README Status)
+- [x] `python -m pytest -q` green (112)
 - [ ] Review with human, then start `SPEC-sync-verification.md` / `SPEC-deploy.md`

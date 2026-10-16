@@ -356,3 +356,14 @@ def test_bridge_error_messages_reach_the_model(served):
     res = tool(tc, "update_note", {"note_id": 123456, "fields": {"Front": "x"}, "approved_by_user": True}, tok)
     assert res["isError"]
     assert "No note with id 123456." in json.dumps(res["content"])
+
+
+@pytest.mark.parametrize("subject", [None, ""])
+def test_missing_subject_fails_closed_under_auth(served, monkeypatch, subject):
+    from mcp.server.auth.provider import AccessToken
+
+    tc, _, _ = served
+    t, _, _ = oauth_login(tc)
+    monkeypatch.setattr(server, "get_access_token", lambda: None if subject is None else AccessToken(token="x", client_id="c", scopes=[], subject=subject))
+    res = tool(tc, "list_decks", token=t.json()["access_token"])
+    assert res["isError"] and "Not authenticated" in json.dumps(res["content"])
