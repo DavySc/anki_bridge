@@ -3,6 +3,14 @@
 Headless MCP server that lets Claude add and edit notes in my Anki collection,
 syncing through AnkiWeb. Spec and boundaries: [GOALS.md](GOALS.md).
 
+## Dev environment
+
+    nix flake lock        # first time, then commit flake.lock
+    nix develop           # python 3.13, jj, git, and a .venv from requirements.txt
+
+(`direnv allow` also works via `.envrc`.) In a jj colocated repo, if nix
+complains that flake.nix is not tracked, use `nix develop path:.`.
+
 ## Run locally
 
     python -m venv .venv && . .venv/bin/activate

@@ -221,3 +221,5 @@ __marimo__/
 data/
 *.anki2
 *.anki2-wal
+.direnv/
+result
