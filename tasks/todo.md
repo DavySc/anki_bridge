@@ -60,16 +60,16 @@ SHA-256 hashes, `load_access_token`, `load_refresh_token`,
 client's grant), `revoke_token`. Propagate `resource`.
 
 **Acceptance criteria:**
-- [ ] Code exchange returns tokens once; second use fails
-- [ ] Access token verifies until expiry, then returns None
-- [ ] Refresh rotates; reusing the old refresh token revokes the grant
-- [ ] Revoked tokens fail verification
-- [ ] `subject` propagates code -> access/refresh token; refresh-reuse revocation and `revoke` are scoped to `(subject, client_id)`
-- [ ] A test-only second authenticator issues tokens for subject `other` that cannot revoke or refresh the owner's
-- [ ] DB inspected in a test: no plaintext token, code or secret present
+- [x] Code exchange returns tokens once; second use fails
+- [x] Access token verifies until expiry, then returns None
+- [x] Refresh rotates; reusing the old refresh token revokes the grant
+- [x] Revoked tokens fail verification
+- [x] `subject` propagates code -> access/refresh token; refresh-reuse revocation and `revoke` are scoped to the grant (one login), which carries the subject and client
+- [x] A test-only second authenticator issues tokens for subject `other` that cannot revoke or refresh the owner's
+- [x] DB inspected in a test: no plaintext token, code or secret present
 
 **Verification:**
-- [ ] `python -m pytest -q test_auth.py` passes
+- [x] `python -m pytest -q test_auth.py` passes
 
 **Dependencies:** Task 2
 **Files:** `auth.py`, `test_auth.py`

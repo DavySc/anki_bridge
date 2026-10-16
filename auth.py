@@ -24,13 +24,20 @@ from collections import defaultdict, deque
 from typing import Any, Callable, Protocol
 from urllib.parse import urlparse
 
+from contextlib import contextmanager
+from typing import Iterator
+
 from mcp.server.auth.provider import (
+    AccessToken,
     AuthorizationCode,
     AuthorizationParams,
+    AuthorizeError,
+    RefreshToken,
     RegistrationError,
+    TokenError,
     construct_redirect_uri,
 )
-from mcp.shared.auth import OAuthClientInformationFull
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
@@ -132,6 +139,23 @@ def _allowed(uri: str, rules: list[str]) -> bool:
 
 PENDING_TTL = 600  # seconds a login page stays valid
 CODE_TTL = 300  # seconds an authorization code stays valid
+ACCESS_TTL = 3600  # 1 hour
+REFRESH_TTL = 30 * 24 * 3600  # 30 days
+
+
+# A grant is one successful login. Its id ties together the code and every token
+# issued from it, so reuse detection and revoke act on exactly that login.
+class OwnerAuthorizationCode(AuthorizationCode):
+    grant_id: str
+
+
+class OwnerRefreshToken(RefreshToken):
+    grant_id: str
+    rotated: bool = False
+
+
+class OwnerAccessToken(AccessToken):
+    grant_id: str
 
 
 def _sha256(value: str) -> str:
@@ -150,10 +174,13 @@ class OwnerProvider:
         redirect_allowlist: list[str] | None = None,
         *,
         public_url: str = "http://127.0.0.1:8000",
+        resource_url: str | None = None,
         now: Callable[[], float] = time.time,
     ):
         self.path = path
         self.public_url = public_url.rstrip("/")
+        # When set, tokens are only issued for this resource (the MCP endpoint).
+        self.resource_url = resource_url.rstrip("/") if resource_url else None
         self._now = now
         self.redirect_allowlist = list(
             DEFAULT_REDIRECT_ALLOWLIST if redirect_allowlist is None else redirect_allowlist
@@ -172,8 +199,15 @@ class OwnerProvider:
             "CREATE TABLE IF NOT EXISTS codes (code_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL,"
             " subject TEXT NOT NULL, scopes TEXT NOT NULL, expires_at REAL NOT NULL,"
             " code_challenge TEXT NOT NULL, redirect_uri TEXT NOT NULL, explicit INTEGER NOT NULL,"
-            " resource TEXT)"
+            " resource TEXT, grant_id TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0)"
         )
+        for table in ("access_tokens", "refresh_tokens"):
+            self._db.execute(
+                f"CREATE TABLE IF NOT EXISTS {table} (token_hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL,"
+                " client_id TEXT NOT NULL, subject TEXT NOT NULL, scopes TEXT NOT NULL, resource TEXT,"
+                " expires_at REAL NOT NULL"
+                + (", rotated INTEGER NOT NULL DEFAULT 0)" if table == "refresh_tokens" else ")")
+            )
         self._db.commit()
 
     def _exec(self, sql: str, args: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
@@ -204,6 +238,8 @@ class OwnerProvider:
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
         """Park the request and send the browser to our login page."""
+        if self.resource_url and params.resource and params.resource.rstrip("/") != self.resource_url:
+            raise AuthorizeError("invalid_target", "unknown resource")
         req_id = secrets.token_urlsafe(32)
         self._exec("DELETE FROM pending WHERE expires_at < ?", (self._now(),))
         self._exec(
@@ -236,7 +272,8 @@ class OwnerProvider:
         params = AuthorizationParams.model_validate_json(raw)
         code = secrets.token_urlsafe(32)
         self._exec(
-            "INSERT INTO codes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO codes (code_hash, client_id, subject, scopes, expires_at, code_challenge,"
+            " redirect_uri, explicit, resource, grant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _sha256(code),
                 client_id,
@@ -246,25 +283,27 @@ class OwnerProvider:
                 params.code_challenge,
                 str(params.redirect_uri),
                 int(params.redirect_uri_provided_explicitly),
-                params.resource,
+                params.resource or self.resource_url,
+                secrets.token_urlsafe(16),
             ),
         )
         return construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state)
 
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
-    ) -> AuthorizationCode | None:
+    ) -> OwnerAuthorizationCode | None:
         rows = self._exec(
-            "SELECT client_id, subject, scopes, expires_at, code_challenge, redirect_uri, explicit, resource"
-            " FROM codes WHERE code_hash = ?",
+            "SELECT client_id, subject, scopes, expires_at, code_challenge, redirect_uri, explicit, resource,"
+            " grant_id FROM codes WHERE code_hash = ?",
             (_sha256(authorization_code),),
         )
         if not rows:
             return None
-        client_id, subject, scopes, expires_at, challenge, redirect_uri, explicit, resource = rows[0]
+        client_id, subject, scopes, expires_at, challenge, redirect_uri, explicit, resource, grant_id = rows[0]
         if client_id != client.client_id or expires_at < self._now():
             return None
-        return AuthorizationCode(
+        return OwnerAuthorizationCode(
+            grant_id=grant_id,
             code=authorization_code,
             scopes=json.loads(scopes),
             expires_at=expires_at,
@@ -276,9 +315,136 @@ class OwnerProvider:
             subject=subject,
         )
 
-    def _delete_code(self, code: str) -> None:
-        """Codes are single use: the token exchange (task 3) calls this."""
-        self._exec("DELETE FROM codes WHERE code_hash = ?", (_sha256(code),))
+    # ---- tokens ---------------------------------------------------------------
+
+    @contextmanager
+    def _tx(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            try:
+                yield self._db
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
+
+    def _revoke_grant(self, db: sqlite3.Connection, grant_id: str) -> None:
+        for table in ("access_tokens", "refresh_tokens", "codes"):
+            db.execute(f"DELETE FROM {table} WHERE grant_id = ?", (grant_id,))
+
+    def _issue(
+        self, db: sqlite3.Connection, grant_id: str, client_id: str, subject: str, scopes: list[str], resource: str | None
+    ) -> OAuthToken:
+        now = self._now()
+        for table in ("access_tokens", "refresh_tokens"):
+            db.execute(f"DELETE FROM {table} WHERE expires_at < ?", (now,))
+        access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        for table, token, ttl in (("access_tokens", access, ACCESS_TTL), ("refresh_tokens", refresh, REFRESH_TTL)):
+            db.execute(
+                f"INSERT INTO {table} (token_hash, grant_id, client_id, subject, scopes, resource, expires_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (_sha256(token), grant_id, client_id, subject, json.dumps(scopes), resource, now + ttl),
+            )
+        return OAuthToken(
+            access_token=access, expires_in=ACCESS_TTL, scope=" ".join(scopes), refresh_token=refresh
+        )
+
+    async def exchange_authorization_code(
+        self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
+    ) -> OAuthToken:
+        """Single use: a second exchange of the same code revokes everything issued from it."""
+        assert isinstance(authorization_code, OwnerAuthorizationCode)
+        with self._tx() as db:
+            used = db.execute(
+                "UPDATE codes SET used = 1 WHERE code_hash = ? AND client_id = ? AND used = 0",
+                (_sha256(authorization_code.code), client.client_id),
+            ).rowcount
+            if used == 1:
+                return self._issue(
+                    db,
+                    authorization_code.grant_id,
+                    client.client_id,
+                    authorization_code.subject or OWNER_SUBJECT,
+                    authorization_code.scopes,
+                    authorization_code.resource,
+                )
+            self._revoke_grant(db, authorization_code.grant_id)
+        # Raised after the transaction commits, so the revocation sticks.
+        raise TokenError("invalid_grant", "authorization code already used")
+
+    async def load_access_token(self, token: str) -> OwnerAccessToken | None:
+        rows = self._exec(
+            "SELECT grant_id, client_id, subject, scopes, resource, expires_at FROM access_tokens"
+            " WHERE token_hash = ?",
+            (_sha256(token),),
+        )
+        if not rows:
+            return None
+        grant_id, client_id, subject, scopes, resource, expires_at = rows[0]
+        if expires_at < self._now():
+            return None
+        return OwnerAccessToken(
+            token=token,
+            grant_id=grant_id,
+            client_id=client_id,
+            subject=subject,
+            scopes=json.loads(scopes),
+            resource=resource,
+            expires_at=int(expires_at),
+        )
+
+    async def load_refresh_token(
+        self, client: OAuthClientInformationFull, refresh_token: str
+    ) -> OwnerRefreshToken | None:
+        rows = self._exec(
+            "SELECT grant_id, client_id, subject, scopes, resource, expires_at, rotated FROM refresh_tokens"
+            " WHERE token_hash = ?",
+            (_sha256(refresh_token),),
+        )
+        if not rows:
+            return None
+        grant_id, client_id, subject, scopes, resource, expires_at, rotated = rows[0]
+        if client_id != client.client_id or expires_at < self._now():
+            return None
+        return OwnerRefreshToken(
+            token=refresh_token,
+            grant_id=grant_id,
+            client_id=client_id,
+            subject=subject,
+            scopes=json.loads(scopes),
+            resource=resource,
+            expires_at=int(expires_at),
+            rotated=bool(rotated),
+        )
+
+    async def exchange_refresh_token(
+        self, client: OAuthClientInformationFull, refresh_token: RefreshToken, scopes: list[str]
+    ) -> OAuthToken:
+        """Rotate: the old refresh token dies. Presenting it again revokes the whole grant."""
+        assert isinstance(refresh_token, OwnerRefreshToken)
+        with self._tx() as db:
+            fresh = db.execute(
+                "UPDATE refresh_tokens SET rotated = 1 WHERE token_hash = ? AND client_id = ? AND rotated = 0",
+                (_sha256(refresh_token.token), client.client_id),
+            ).rowcount
+            if fresh == 1:
+                db.execute("DELETE FROM access_tokens WHERE grant_id = ?", (refresh_token.grant_id,))
+                return self._issue(
+                    db,
+                    refresh_token.grant_id,
+                    client.client_id,
+                    refresh_token.subject or OWNER_SUBJECT,
+                    scopes,
+                    refresh_token.resource,
+                )
+            self._revoke_grant(db, refresh_token.grant_id)
+        raise TokenError("invalid_grant", "refresh token already used; grant revoked")
+
+    async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
+        """Revoking either token ends the whole grant (login) it belongs to."""
+        grant_id = getattr(token, "grant_id", None)
+        if grant_id:
+            with self._tx() as db:
+                self._revoke_grant(db, grant_id)
 
 
 # ---- login page ----------------------------------------------------------------

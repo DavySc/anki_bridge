@@ -191,6 +191,12 @@ def env():
     return prov, tc, clock, limiter
 
 
+def login_code(prov, tc, **kw):
+    _, req = start(prov, **kw)
+    r = tc.post("/login", data={"req": req, "secret": SECRET})
+    return parse_qs(urlparse(r.headers["location"]).query)["code"][0]
+
+
 def start(prov, state="xyz", challenge="chal", resource="https://anki.example/mcp"):
     c = run(prov.get_client("c1"))
     params = AuthorizationParams(
@@ -313,16 +319,11 @@ def test_unknown_request_id_never_redirects(env, req):
         assert r.status_code == 400 and "location" not in r.headers
 
 
-def test_code_expires_and_is_deletable(env):
+def test_code_expires(env):
     prov, tc, clock, _ = env
     c = run(prov.get_client("c1"))
-    _, req = start(prov)
-    code = parse_qs(urlparse(tc.post("/login", data={"req": req, "secret": SECRET}).headers["location"]).query)["code"][0]
+    code = login_code(prov, tc)
     assert run(prov.load_authorization_code(c, code)) is not None
-    prov._delete_code(code)
-    assert run(prov.load_authorization_code(c, code)) is None
-    _, req = start(prov)
-    code = parse_qs(urlparse(tc.post("/login", data={"req": req, "secret": SECRET}).headers["location"]).query)["code"][0]
     clock.t += 301
     assert run(prov.load_authorization_code(c, code)) is None
 
@@ -361,3 +362,172 @@ def test_hash_cli_rejects_short_or_mismatched_secrets():
         main(["hash"], prompt=lambda _: next(answers))
     with pytest.raises(SystemExit):
         main([])
+
+
+# ---- tokens ----------------------------------------------------------------------
+
+from mcp.server.auth.provider import AuthorizeError, TokenError
+
+RESOURCE = "https://anki.example/mcp"
+
+
+def tokens_for(prov, tc, client_id="c1"):
+    c = run(prov.get_client(client_id))
+    code = run(prov.load_authorization_code(c, login_code(prov, tc, resource=RESOURCE)))
+    return c, code, run(prov.exchange_authorization_code(c, code))
+
+
+def test_code_exchange_issues_working_tokens(env):
+    prov, tc, _, _ = env
+    c, code, tok = tokens_for(prov, tc)
+    assert tok.token_type == "Bearer" and tok.expires_in == 3600 and tok.refresh_token
+    at = run(prov.load_access_token(tok.access_token))
+    assert at.subject == OWNER_SUBJECT and at.client_id == "c1" and at.resource == RESOURCE
+
+
+def test_code_cannot_be_exchanged_twice_and_second_try_revokes_the_grant(env):
+    prov, tc, _, _ = env
+    c, code, tok = tokens_for(prov, tc)
+    with pytest.raises(TokenError):
+        run(prov.exchange_authorization_code(c, code))
+    assert run(prov.load_access_token(tok.access_token)) is None
+    assert run(prov.load_refresh_token(c, tok.refresh_token)) is None
+
+
+def test_access_token_expires(env):
+    prov, tc, clock, _ = env
+    _, _, tok = tokens_for(prov, tc)
+    clock.t += 3599
+    assert run(prov.load_access_token(tok.access_token)) is not None
+    clock.t += 2
+    assert run(prov.load_access_token(tok.access_token)) is None
+
+
+def test_unknown_or_garbage_access_token_is_none(env):
+    prov, _, _, _ = env
+    assert run(prov.load_access_token("nope")) is None
+    assert run(prov.load_access_token("")) is None
+
+
+def test_refresh_rotates_both_tokens(env):
+    prov, tc, _, _ = env
+    c, _, tok = tokens_for(prov, tc)
+    rt = run(prov.load_refresh_token(c, tok.refresh_token))
+    new = run(prov.exchange_refresh_token(c, rt, rt.scopes))
+    assert new.access_token != tok.access_token and new.refresh_token != tok.refresh_token
+    assert run(prov.load_access_token(tok.access_token)) is None
+    at = run(prov.load_access_token(new.access_token))
+    assert at.subject == OWNER_SUBJECT and at.resource == RESOURCE
+
+
+def test_reusing_a_rotated_refresh_token_revokes_the_grant(env):
+    prov, tc, _, _ = env
+    c, _, tok = tokens_for(prov, tc)
+    old = run(prov.load_refresh_token(c, tok.refresh_token))
+    new = run(prov.exchange_refresh_token(c, old, old.scopes))
+    stale = run(prov.load_refresh_token(c, tok.refresh_token))
+    assert stale is not None and stale.rotated  # must reach exchange so reuse is detected
+    with pytest.raises(TokenError):
+        run(prov.exchange_refresh_token(c, stale, stale.scopes))
+    assert run(prov.load_access_token(new.access_token)) is None
+    assert run(prov.load_refresh_token(c, new.refresh_token)) is None
+
+
+def test_refresh_token_expires_after_30_days(env):
+    prov, tc, clock, _ = env
+    c, _, tok = tokens_for(prov, tc)
+    clock.t += 30 * 24 * 3600 - 1
+    assert run(prov.load_refresh_token(c, tok.refresh_token)) is not None
+    clock.t += 2
+    assert run(prov.load_refresh_token(c, tok.refresh_token)) is None
+
+
+def test_revoking_either_token_ends_the_whole_grant(env):
+    prov, tc, _, _ = env
+    for which in ("access", "refresh"):
+        c, _, tok = tokens_for(prov, tc)
+        t = run(prov.load_access_token(tok.access_token)) if which == "access" else run(prov.load_refresh_token(c, tok.refresh_token))
+        run(prov.revoke_token(t))
+        assert run(prov.load_access_token(tok.access_token)) is None
+        assert run(prov.load_refresh_token(c, tok.refresh_token)) is None
+
+
+def test_revoking_a_made_up_token_does_nothing(env):
+    prov, tc, _, _ = env
+    _, _, tok = tokens_for(prov, tc)
+    from mcp.server.auth.provider import AccessToken
+
+    run(prov.revoke_token(AccessToken(token="x", client_id="c1", scopes=[])))
+    assert run(prov.load_access_token(tok.access_token)) is not None
+
+
+def test_refresh_token_belongs_to_its_client(env):
+    prov, tc, _, _ = env
+    run(prov.register_client(client(client_id="c2")))
+    _, _, tok = tokens_for(prov, tc)
+    assert run(prov.load_refresh_token(run(prov.get_client("c2")), tok.refresh_token)) is None
+
+
+class OtherAuthenticator:
+    """Test-only second user: proves the subject seam, not a feature."""
+
+    def authenticate(self, credentials):
+        return "other" if credentials.get("secret") == "other-pw" else None
+
+
+def test_second_subject_gets_its_own_isolated_grant(env):
+    prov, tc, clock, limiter = env
+    c, _, owner_tok = tokens_for(prov, tc)
+    app = Starlette(routes=[Route("/login", make_login_handler(prov, OtherAuthenticator(), limiter), methods=["POST", "GET"])])
+    tc2 = TestClient(app, follow_redirects=False, base_url="https://anki.example")
+    _, req = start(prov, resource=RESOURCE)
+    r = tc2.post("/login", data={"req": req, "secret": "other-pw"})
+    code = parse_qs(urlparse(r.headers["location"]).query)["code"][0]
+    oc = run(prov.load_authorization_code(c, code))
+    other_tok = run(prov.exchange_authorization_code(c, oc))
+
+    assert run(prov.load_access_token(other_tok.access_token)).subject == "other"
+    assert run(prov.load_access_token(owner_tok.access_token)).subject == OWNER_SUBJECT
+    # revoking or rotating the other user's grant leaves the owner's alone
+    run(prov.revoke_token(run(prov.load_access_token(other_tok.access_token))))
+    assert run(prov.load_access_token(other_tok.access_token)) is None
+    assert run(prov.load_access_token(owner_tok.access_token)) is not None
+    assert run(prov.load_refresh_token(c, owner_tok.refresh_token)) is not None
+
+
+def test_authorize_binds_to_the_resource_when_configured():
+    path = os.path.join(tempfile.mkdtemp(), "r.sqlite3")
+    prov = OwnerProvider(path, public_url="https://anki.example", resource_url=RESOURCE)
+    run(prov.register_client(client()))
+    c = run(prov.get_client("c1"))
+
+    def params(resource):
+        return AuthorizationParams(state=None, scopes=[], code_challenge="x", redirect_uri=REDIRECT,
+                                   redirect_uri_provided_explicitly=True, resource=resource)
+
+    with pytest.raises(AuthorizeError) as e:
+        run(prov.authorize(c, params("https://evil.example/mcp")))
+    assert e.value.error == "invalid_target"
+    run(prov.authorize(c, params(RESOURCE + "/")))  # trailing slash tolerated
+    run(prov.authorize(c, params(None)))  # omitted resource defaults to ours
+
+
+def test_missing_resource_defaults_to_ours_on_the_token():
+    clock = Clock()
+    path = os.path.join(tempfile.mkdtemp(), "r.sqlite3")
+    prov = OwnerProvider(path, public_url="https://anki.example", resource_url=RESOURCE, now=clock)
+    run(prov.register_client(client()))
+    app = Starlette(routes=[Route("/login", make_login_handler(prov, OwnerAuthenticator(hash_secret(SECRET)), LoginLimiter(now=clock)), methods=["GET", "POST"])])
+    tc = TestClient(app, follow_redirects=False, base_url="https://anki.example")
+    c = run(prov.get_client("c1"))
+    code = run(prov.load_authorization_code(c, login_code(prov, tc, resource=None)))
+    tok = run(prov.exchange_authorization_code(c, code))
+    assert run(prov.load_access_token(tok.access_token)).resource == RESOURCE
+
+
+def test_db_holds_no_plaintext_tokens(env):
+    prov, tc, _, _ = env
+    c, _, tok = tokens_for(prov, tc)
+    raw = open(prov.path, "rb").read().decode("latin-1")
+    dump = raw + str(prov._exec("SELECT * FROM access_tokens")) + str(prov._exec("SELECT * FROM refresh_tokens"))
+    assert tok.access_token not in dump and tok.refresh_token not in dump and SECRET not in dump

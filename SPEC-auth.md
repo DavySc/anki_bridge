@@ -68,7 +68,11 @@ Built now, because they are nearly free; the rest of multi-user is not built.
 - Rate limiter keys on the client IP plus a global bucket, never on the claimed
   username (the attacker chooses it). A later multi-user authenticator may add
   the username as an extra key, not a replacement.
-- Revocation and refresh-reuse detection are scoped to `(subject, client_id)`.
+- Revocation and reuse detection are scoped to the grant (one login: its code and
+  every token issued from it), which carries the subject and client. Reusing a
+  code or a rotated refresh token revokes that grant; revoking either token ends it.
+- With `resource_url` set, `/authorize` rejects other resources (`invalid_target`)
+  and a missing resource defaults to ours, so tokens always carry our audience.
 - `server.py` resolves the caller with `bridge_for(subject)` (subject from
   `get_access_token()`), not a module-level global. Today it returns the one
   Bridge. If `get_access_token()` is None under auth, the tool fails closed.
