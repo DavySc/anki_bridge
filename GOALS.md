@@ -1,6 +1,7 @@
 # anki-claude-bridge: goals
 
-Personal tool, single user. Turn insights from Claude conversations (mainly on
+Personal tool, one user today. Built so that adding users later is a contained
+change (see "Multi-user readiness"). Turn insights from Claude conversations (mainly on
 the phone) into well-formed notes in my existing Anki decks.
 
 ## Goal
@@ -36,17 +37,40 @@ Only then is `add_notes` called. There is no server-side pending queue.
 
 `list_decks`, `list_note_types`, `find_notes`, `add_notes`, `update_note`, `sync`
 
+## Multi-user readiness
+
+Only one user is supported and built. These rules keep a later per-user
+expansion cheap, and cost almost nothing now:
+
+- Every authorization code and token carries a `subject` (the user id). Today it
+  is always `owner`.
+- Login goes through one function, `authenticate(credentials) -> subject | None`.
+  Today it checks the single owner secret.
+- Tools never use a global `Bridge`. They call `bridge_for(subject)`, where the
+  subject comes from the access token. Today it returns the one Bridge.
+- `core.py` stays free of auth and MCP code and holds no per-process user state;
+  a `Bridge` is one user's collection, lock and sync credentials.
+- Per-user data lives under one root: `data/<subject>/collection.anki2`
+  (today `data/owner/`, with `ANKI_COLLECTION` still overriding the path).
+- Rate limits and logs key on subject plus IP, never on subject alone.
+- Per-user AnkiWeb credentials are not stored yet (env vars). Storing other
+  people's AnkiWeb passwords needs encryption at rest and is a decision for
+  that later project.
+
+Not built, on purpose: user table, signup or invite flow, per-user credential
+storage, per-user bootstrap tooling, quotas.
+
 ## Out of scope
 
 Reviewing in chat, media, scheduling changes, deck or note-type restructuring,
-multi-user.
+multi-user accounts (only the seams above).
 
 ## Decisions
 
 - Sync: AnkiWeb (self-hosted sync server maybe later).
 - Host: Hetzner VPS, Python under systemd, Caddy for HTTPS.
 - Library: `anki` (headless), `mcp` 2.x (`MCPServer`).
-- Auth: OAuth, only I can authorize. Still to be built.
+- Auth: built-in single-user OAuth, only I can authorize. See SPEC-auth.md.
 
 ## Open
 
