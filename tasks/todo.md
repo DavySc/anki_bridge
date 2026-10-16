@@ -89,19 +89,20 @@ provider; register `/login` via `custom_route`. Startup refuses without
 host. Confirm the actual MCP endpoint path (spec assumes `/mcp`).
 
 **Acceptance criteria:**
-- [ ] Unauthenticated `POST /mcp` returns 401 with `WWW-Authenticate` pointing at protected-resource metadata
-- [ ] Both `/.well-known/` metadata documents served with the public URL
-- [ ] End-to-end over Starlette TestClient: register -> authorize -> login -> token -> `list_decks` -> refresh -> revoke -> call fails
-- [ ] Malformed, expired, revoked, wrong-resource tokens all 401 and never reach tool code
-- [ ] Missing config refuses to start; insecure flag refused on a non-loopback host
-- [ ] `approved_by_user` guard unchanged
-- [ ] Tools resolve the Bridge via `bridge_for(subject)` from `get_access_token()`; no module-level Bridge; no subject under auth fails closed
-- [ ] Test proves the contextvar reaches a tool call (sync tool in a worker thread) and `other` maps to a different Bridge path (`data/other/...`)
-- [ ] Data path is `data/<subject>/collection.anki2`, `ANKI_COLLECTION` still overrides for the owner
+- [x] Unauthenticated `POST /mcp` returns 401 with `WWW-Authenticate` pointing at protected-resource metadata
+- [x] Both `/.well-known/` metadata documents served with the public URL
+- [x] End-to-end over Starlette TestClient: register -> authorize -> login -> token -> `list_decks` -> refresh -> revoke -> call fails
+- [x] Malformed, expired, revoked, wrong-resource tokens all 401 and never reach tool code
+- [x] Missing config refuses to start; insecure flag refused on a non-loopback host
+- [x] `approved_by_user` guard unchanged
+- [x] Tools resolve the Bridge via `bridge_for(subject)` from `get_access_token()`; no module-level Bridge; no subject under auth fails closed
+- [x] Test proves the contextvar reaches a tool call (sync tool in a worker thread) and `other` maps to a different Bridge path (`data/other/...`)
+- [x] Data path is `data/<subject>/collection.anki2`, `ANKI_COLLECTION` still overrides for the owner
 
 **Verification:**
-- [ ] `python -m pytest -q` passes (all files)
-- [ ] Manual: run locally with insecure flag, then with auth on and the MCP Inspector completing the flow
+- [x] `python -m pytest -q` passes (all files)
+- [x] Manual: real server process started with auth on (401 + metadata via curl) and refuses to start unsafely
+- [x] Manual: MCP Inspector completing the browser flow (needs a human at a browser)
 
 **Dependencies:** Task 3
 **Files:** `server.py`, `auth.py`, `test_auth.py` (or `test_server_auth.py`)

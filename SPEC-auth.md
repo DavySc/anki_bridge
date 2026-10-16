@@ -152,6 +152,15 @@ pytest, no network. Drive the provider and the Starlette app in-process
 - [ ] All existing `test_core.py` tests still pass unchanged.
 - [ ] README "Status" updated; GOALS.md "Auth ... Still to be built" updated.
 
+## Findings during build
+
+- mcp 2.x hides the text of ordinary exceptions from the model; only `ToolError`
+  text is shown. `server.py` wraps tools with `surfaced` so `BridgeError`
+  messages ("Not approved...", validation errors) reach Claude. Before this the
+  model only saw "Error executing tool ...".
+- Behind Caddy, the SDK's DNS-rebinding check rejects the public Host header
+  unless allowed; `transport_security()` allows the PUBLIC_URL host.
+
 ## Open Questions
 
 1. Does the Claude custom-connector flow (especially the phone app) accept

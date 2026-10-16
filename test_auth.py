@@ -9,6 +9,8 @@ from mcp.server.auth.provider import RegistrationError
 from mcp.shared.auth import OAuthClientInformationFull
 
 from auth import (
+    derive_server_key,
+    forwarded_client_ip,
     DEFAULT_REDIRECT_ALLOWLIST,
     OWNER_SUBJECT,
     OwnerAuthenticator,
@@ -16,6 +18,9 @@ from auth import (
     hash_secret,
     verify_secret,
 )
+
+
+KEY = b"k" * 32
 
 
 def run(coro):
@@ -35,18 +40,19 @@ def client(client_id="c1", redirects=("https://claude.ai/api/mcp/auth_callback",
 @pytest.fixture()
 def provider():
     path = os.path.join(tempfile.mkdtemp(), "auth.sqlite3")
-    return OwnerProvider(path)
+    return OwnerProvider(path, server_key=KEY)
 
 
 # ---- clients ---------------------------------------------------------------
 
 
 def test_registered_client_round_trips(provider):
-    run(provider.register_client(client()))
+    info = client()
+    run(provider.register_client(info))
     got = run(provider.get_client("c1"))
     assert got is not None
     assert got.client_id == "c1"
-    assert got.client_secret == "s3cret"
+    assert got.client_secret == info.client_secret  # the derived one the client was handed
     assert [str(u) for u in got.redirect_uris] == ["https://claude.ai/api/mcp/auth_callback"]
 
 
@@ -56,7 +62,7 @@ def test_unknown_client_is_none(provider):
 
 def test_client_survives_reopening_the_database(provider):
     run(provider.register_client(client()))
-    again = OwnerProvider(provider.path)
+    again = OwnerProvider(provider.path, server_key=KEY)
     assert run(again.get_client("c1")) is not None
 
 
@@ -108,7 +114,7 @@ def test_default_allowlist_accepts(provider, uri):
 
 def test_allowlist_is_configurable():
     path = os.path.join(tempfile.mkdtemp(), "a.sqlite3")
-    p = OwnerProvider(path, redirect_allowlist=["https://example.org"])
+    p = OwnerProvider(path, server_key=KEY, redirect_allowlist=["https://example.org"])
     run(p.register_client(client(redirects=["https://example.org/cb"])))
     with pytest.raises(RegistrationError):
         run(p.register_client(client(client_id="c2", redirects=["https://claude.ai/cb"])))
@@ -175,7 +181,7 @@ class Clock:
 def env():
     clock = Clock()
     path = os.path.join(tempfile.mkdtemp(), "auth.sqlite3")
-    prov = OwnerProvider(path, public_url="https://anki.example", now=clock)
+    prov = OwnerProvider(path, server_key=KEY, public_url="https://anki.example", now=clock)
     run(prov.register_client(client()))
     limiter = LoginLimiter(now=clock)
     app = Starlette(
@@ -497,7 +503,7 @@ def test_second_subject_gets_its_own_isolated_grant(env):
 
 def test_authorize_binds_to_the_resource_when_configured():
     path = os.path.join(tempfile.mkdtemp(), "r.sqlite3")
-    prov = OwnerProvider(path, public_url="https://anki.example", resource_url=RESOURCE)
+    prov = OwnerProvider(path, server_key=KEY, public_url="https://anki.example", resource_url=RESOURCE)
     run(prov.register_client(client()))
     c = run(prov.get_client("c1"))
 
@@ -515,7 +521,7 @@ def test_authorize_binds_to_the_resource_when_configured():
 def test_missing_resource_defaults_to_ours_on_the_token():
     clock = Clock()
     path = os.path.join(tempfile.mkdtemp(), "r.sqlite3")
-    prov = OwnerProvider(path, public_url="https://anki.example", resource_url=RESOURCE, now=clock)
+    prov = OwnerProvider(path, server_key=KEY, public_url="https://anki.example", resource_url=RESOURCE, now=clock)
     run(prov.register_client(client()))
     app = Starlette(routes=[Route("/login", make_login_handler(prov, OwnerAuthenticator(hash_secret(SECRET)), LoginLimiter(now=clock)), methods=["GET", "POST"])])
     tc = TestClient(app, follow_redirects=False, base_url="https://anki.example")
@@ -531,3 +537,46 @@ def test_db_holds_no_plaintext_tokens(env):
     raw = open(prov.path, "rb").read().decode("latin-1")
     dump = raw + str(prov._exec("SELECT * FROM access_tokens")) + str(prov._exec("SELECT * FROM refresh_tokens"))
     assert tok.access_token not in dump and tok.refresh_token not in dump and SECRET not in dump
+
+
+# ---- derived client secret ---------------------------------------------------------
+
+
+def test_client_secret_is_derived_and_never_stored(provider):
+    info = client(client_secret="minted-by-sdk")
+    run(provider.register_client(info))
+    assert info.client_secret != "minted-by-sdk"  # the SDK echoes this object to the client
+    assert run(provider.get_client("c1")).client_secret == info.client_secret
+    assert info.client_secret not in open(provider.path, "rb").read().decode("latin-1")
+    assert "minted-by-sdk" not in open(provider.path, "rb").read().decode("latin-1")
+
+
+def test_client_secret_depends_on_server_key_and_client_id(provider):
+    run(provider.register_client(client()))
+    run(provider.register_client(client(client_id="c2")))
+    other = OwnerProvider(provider.path, server_key=b"z" * 32)
+    a, b = run(provider.get_client("c1")), run(provider.get_client("c2"))
+    assert a.client_secret != b.client_secret
+    assert run(other.get_client("c1")).client_secret != a.client_secret
+
+
+def test_public_clients_keep_no_secret(provider):
+    info = OAuthClientInformationFull(
+        client_id="pub", redirect_uris=["https://claude.ai/cb"], token_endpoint_auth_method="none"
+    )
+    run(provider.register_client(info))
+    assert run(provider.get_client("pub")).client_secret is None
+
+
+def test_derive_server_key_is_stable_and_secret_dependent():
+    assert derive_server_key("h1") == derive_server_key("h1") != derive_server_key("h2")
+
+
+def test_forwarded_ip_uses_the_proxy_appended_entry():
+    from starlette.requests import Request as R
+
+    def req(h):
+        return R({"type": "http", "headers": [(k.encode(), v.encode()) for k, v in h.items()], "client": ("10.0.0.1", 1)})
+
+    assert forwarded_client_ip(req({"x-forwarded-for": "6.6.6.6, 1.2.3.4"})) == "1.2.3.4"  # spoofed prefix ignored
+    assert forwarded_client_ip(req({})) == "10.0.0.1"

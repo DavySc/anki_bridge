@@ -55,6 +55,12 @@ DEFAULT_REDIRECT_ALLOWLIST = [
 ]
 
 
+def derive_server_key(owner_secret_hash: str) -> bytes:
+    """Key for derived client secrets. Changing the owner secret invalidates registered
+    clients, which simply register again."""
+    return hmac.new(b"anki-claude-bridge/server-key/v1", owner_secret_hash.encode(), hashlib.sha256).digest()
+
+
 def redirect_allowlist_from_env() -> list[str]:
     raw = os.environ.get("REDIRECT_ALLOWLIST")
     if not raw:
@@ -112,7 +118,7 @@ class OwnerAuthenticator:
 # ---- provider ----------------------------------------------------------------
 
 
-def _loopback(host: str) -> bool:
+def is_loopback(host: str) -> bool:
     if host == "localhost":
         return True
     try:
@@ -132,7 +138,7 @@ def _allowed(uri: str, rules: list[str]) -> bool:
         if r.port is not None:
             if u.port == r.port:
                 return True
-        elif _loopback(u.hostname) or u.port is None:
+        elif is_loopback(u.hostname) or u.port is None:
             return True
     return False
 
@@ -173,11 +179,13 @@ class OwnerProvider:
         path: str,
         redirect_allowlist: list[str] | None = None,
         *,
+        server_key: bytes,
         public_url: str = "http://127.0.0.1:8000",
         resource_url: str | None = None,
         now: Callable[[], float] = time.time,
     ):
         self.path = path
+        self._server_key = server_key
         self.public_url = public_url.rstrip("/")
         # When set, tokens are only issued for this resource (the MCP endpoint).
         self.resource_url = resource_url.rstrip("/") if resource_url else None
@@ -216,9 +224,17 @@ class OwnerProvider:
             self._db.commit()
             return rows
 
+    def _client_secret(self, client_id: str) -> str:
+        return hmac.new(self._server_key, b"client-secret|" + client_id.encode(), hashlib.sha256).hexdigest()
+
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         rows = self._exec("SELECT info FROM clients WHERE client_id = ?", (client_id,))
-        return OAuthClientInformationFull.model_validate_json(rows[0][0]) if rows else None
+        if not rows:
+            return None
+        info = OAuthClientInformationFull.model_validate_json(rows[0][0])
+        if info.token_endpoint_auth_method != "none":
+            info.client_secret = self._client_secret(client_id)
+        return info
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         uris = [str(u) for u in client_info.redirect_uris or []]
@@ -227,11 +243,14 @@ class OwnerProvider:
         for uri in uris:
             if not _allowed(uri, self.redirect_allowlist):
                 raise RegistrationError("invalid_redirect_uri", f"redirect_uri not allowed: {uri}")
-        # The SDK compares the presented client_secret to the stored one, so it is stored
-        # as given. It is a DCR client credential, not the owner secret or a token.
+        # The SDK compares the presented client_secret with what get_client returns, so a
+        # hash will not do. Instead the secret is derived from a server key and never stored:
+        # replace the random one the SDK minted (it echoes this same object to the client).
+        if client_info.token_endpoint_auth_method != "none" and client_info.client_secret is not None:
+            client_info.client_secret = self._client_secret(client_info.client_id)
         self._exec(
             "INSERT INTO clients (client_id, info) VALUES (?, ?)",
-            (client_info.client_id, client_info.model_dump_json()),
+            (client_info.client_id, client_info.model_copy(update={"client_secret": None}).model_dump_json()),
         )
 
     # ---- authorize -> login -> code -----------------------------------------
@@ -494,6 +513,14 @@ input,button{{width:100%;padding:.6rem;margin:.4rem 0;font-size:1rem}}.e{{color:
 
 def _page(body: str, status: int = 200) -> HTMLResponse:
     return HTMLResponse(_PAGE.format(body=body), status_code=status, headers=_NO_STORE)
+
+
+def forwarded_client_ip(request: Request) -> str:
+    """Client IP behind one trusted reverse proxy (Caddy): the last X-Forwarded-For entry,
+    which the proxy appended itself. Earlier entries are client-supplied and ignored."""
+    xff = request.headers.get("x-forwarded-for", "")
+    last = xff.rsplit(",", 1)[-1].strip()
+    return last or _default_client_ip(request)
 
 
 def _default_client_ip(request: Request) -> str:
