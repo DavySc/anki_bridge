@@ -89,20 +89,20 @@ anki.panzeilkamp.com` (certonly keeps certbot from rewriting our file), then ins
 ## Task 5: Reboot, crash, update [you]
 
 **Acceptance criteria:**
-- [ ] After `reboot`, the service and `check.sh` come back with no action
-- [ ] `kill -9` of the server process: systemd restarts it
-- [ ] Update procedure from the spec (`git pull`, restart, `check.sh`) works; restart time recorded
+- [x] After `reboot`, the service and `check.sh` come back with no action
+- [x] `kill -9` of the server process: systemd restarts it
+- [x] Update procedure from the spec (`git pull`, restart, `check.sh`) works; restart time recorded
 
 **Verification:**
-- [ ] `journalctl -u anki-bridge -b` has no warnings beyond the expected one
+- [x] `journalctl -u anki-bridge -b` has no warnings beyond the expected one
 
 **Dependencies:** Task 4
 **Files:** `DEPLOY.md`
 **Scope:** Small
 
 ## Checkpoint: Reachable and durable
-- [ ] Tasks 4 and 5 met
-- [ ] Review with human before connecting Claude or touching the collection
+- [x] Tasks 4 and 5 met
+- [x] Review with human before connecting Claude or touching the collection
 
 ## Task 6: Real Claude connector [you, me for fixes]
 
