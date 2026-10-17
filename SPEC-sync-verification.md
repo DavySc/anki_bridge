@@ -118,6 +118,12 @@ play "server side" and "phone" (device B) so conflicts are real.
   with `overwrite` it replaces the server's collection.
 - **Suite time.** One sync server for the session; every login still costs the server
   about 0.4 s of password hashing, which now dominates the sync tests.
+- **First real AnkiWeb use failed (2026-10-17): `HttpError 400 "missing original size"`** on
+  `bootstrap.py download`, from both the VPS and a laptop, so not network-specific. The local
+  server cannot show this. Hypothesis, to be confirmed by the next real run: AnkiWeb answers a
+  normal sync call with `new_endpoint` (the server holding the account) and the full transfer
+  must use it, as Anki's own client does. `bootstrap.py` now makes that sync call first, applies
+  `new_endpoint`, refuses a download over an existing file, and downloads to a temporary file.
 
 ## Required behaviour (what the tests assert)
 

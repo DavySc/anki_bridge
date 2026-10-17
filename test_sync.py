@@ -598,3 +598,18 @@ def test_bootstrap_upload_with_overwrite_replaces_the_server(account, bridge):
     assert done.returncode == 0, done.stderr
     check = account.phone("check")
     assert list(note_texts(check)) == [] and "Other" in [d.name for d in check.decks.all_names_and_ids()]
+
+
+def test_bootstrap_download_refuses_to_replace_an_existing_collection(account, bridge):
+    done = run_bootstrap(account, "download", bridge.path)
+    assert done.returncode != 0 and "already exists" in done.stderr
+    assert snapshot(bridge.path)[0] == 0  # untouched
+
+
+def test_a_failed_bootstrap_download_leaves_no_collection_behind(account, bridge):
+    path = os.path.join(tempfile.mkdtemp(), "collection.anki2")
+    wrong = Account(account.server)
+    wrong.password = "wrong"
+    done = run_bootstrap(wrong, "download", path)
+    assert done.returncode != 0
+    assert os.listdir(os.path.dirname(path)) == []  # no empty collection for the server to mistake for real
