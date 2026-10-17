@@ -69,11 +69,9 @@ Deliberately not built: user table, signup, per-user AnkiWeb credentials, quotas
 - Done: sync checked offline against Anki's bundled sync server (see "Sync tests").
 - Untested: real AnkiWeb sync. AnkiWeb-only behaviour (login rate limits, dropped
   connections that never answer) cannot be reproduced locally. Follow "First real use".
-- Untested: the real Claude connector against this server (needs HTTPS, so it
-  waits for module `deploy`). Open questions to settle then: does Claude use
-  dynamic client registration, and is its callback still
-  `/api/mcp/auth_callback` (otherwise add it to `REDIRECT_ALLOWLIST`)? If it needs
-  a fixed client, add one pre-registered client from env vars.
+- Done: the real Claude connector (web) registers, logs in and lists tools against
+  `https://anki.panzeilkamp.com/mcp`. Not yet checked: the phone app, and tool calls on the
+  real collection.
 
 ## Sync tests
 

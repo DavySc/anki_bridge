@@ -161,6 +161,15 @@ pytest, no network. Drive the provider and the Starlette app in-process
 - Behind a reverse proxy, the SDK's DNS-rebinding check rejects the public Host header
   unless allowed; `transport_security()` allows the PUBLIC_URL host.
 
+## Findings from the real connector (2026-10-17, web)
+
+- **Open questions 1 and 2 answered.** Claude's custom connector registers itself with
+  `POST /register` (201), uses `redirect_uri=https://claude.ai/api/mcp/auth_callback` (already in
+  the default allowlist), S256 PKCE, and sends `resource=https://anki.panzeilkamp.com/mcp`, which
+  matches the audience check. Login, `/token` and `POST /mcp` all succeeded on the first try.
+  Claude's server-side calls come from `160.79.106.x`; the browser step comes from the user's IP.
+- No pre-registered client and no allowlist change were needed.
+
 ## Open Questions
 
 1. Does the Claude custom-connector flow (especially the phone app) accept

@@ -110,14 +110,14 @@ anki.panzeilkamp.com` (certonly keeps certbot from rewriting our file), then ins
 then phone). Watch the server log. Record what Claude does.
 
 **Acceptance criteria:**
-- [ ] Registration succeeds (dynamic client registration) or the failure is recorded with the request seen in the log
-- [ ] The callback URL Claude uses is accepted by `REDIRECT_ALLOWLIST`, or the default is corrected with your approval
-- [ ] Login page shows the client name; wrong secret is refused; right secret completes
+- [x] Registration succeeds (dynamic client registration) or the failure is recorded with the request seen in the log
+- [x] The callback URL Claude uses is accepted by `REDIRECT_ALLOWLIST`, or the default is corrected with your approval
+- [x] Login page shows the client name; wrong secret is refused; right secret completes
 - [ ] A tool call reaches the server with a valid token; before Task 7 it answers that the collection is missing, which is expected
 - [ ] Phone app connects too
 
 **Verification:**
-- [ ] SPEC-auth Open Questions 1 and 2 answered in the spec with what was observed
+- [x] SPEC-auth Open Questions 1 and 2 answered in the spec with what was observed
 - [ ] If code changed: full suite green, pushed, pulled on the VPS, `check.sh` passes
 
 **Dependencies:** Task 5
