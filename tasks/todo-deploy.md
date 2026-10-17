@@ -73,11 +73,11 @@ untouched. Fix hardening problems here, not later.
 anki.panzeilkamp.com` (certonly keeps certbot from rewriting our file), then install the full `nginx-anki.conf`, reload. Never edit the `panzeilkamp.com` blocks.
 
 **Acceptance criteria:**
-- [ ] `nginx -t` clean before each reload; `systemctl reload nginx`
-- [ ] `https://anki.panzeilkamp.com/.well-known/oauth-protected-resource` serves a valid certificate and the public URL
-- [ ] `deploy/check.sh https://anki.panzeilkamp.com` passes
-- [ ] `https://panzeilkamp.com` still works; `curl http://49.12.74.253:8765` from outside fails
-- [ ] `certbot renew --dry-run` succeeds
+- [x] `nginx -t` clean before each reload; `systemctl reload nginx`
+- [x] `https://anki.panzeilkamp.com/.well-known/oauth-protected-resource` serves a valid certificate and the public URL
+- [x] `deploy/check.sh https://anki.panzeilkamp.com` passes
+- [x] `https://panzeilkamp.com` unchanged by us (its backend on :8000 was already down before the deploy, 502); `curl http://49.12.74.253:8765` from outside fails (check.sh)
+- [x] `certbot renew --dry-run` succeeds
 
 **Verification:**
 - [ ] The final nginx file in the repo equals what is on the VPS (`diff`)
