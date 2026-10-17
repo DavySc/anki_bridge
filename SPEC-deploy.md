@@ -22,8 +22,8 @@ multi-user, a second host, a self-hosted sync server.
 
 - Caddy already runs on this VPS and serves another app (`panzeilkamp.com`). Add one
   site block; do not replace its config.
-- DNS: `anki` A record to 49.12.74.253. It was shown as *Proxied* in Cloudflare; it must
-  be **DNS only** so Caddy can get its own certificate and the client IP header is real.
+- DNS: `anki` A record to 49.12.74.253, now **DNS only** in Cloudflare (confirmed), so Caddy
+  gets its own certificate and the client IP header is real.
 - You ran `sudo apt install nix` as root. The post-install step printed
   `Could not execute systemctl`, so the nix daemon may not be running. Flakes also need
   enabling in `/etc/nix/nix.conf`. Both are checked in the runbook before relying on nix.
@@ -40,7 +40,7 @@ multi-user, a second host, a self-hosted sync server.
   `app/` (the repo checkout), `data/` (collection, `auth.sqlite3`), `env` (secrets,
   mode 0600, owned by `anki`). The service never runs as root.
 - **Getting the code.** `git clone` of the repo into `app/`, updated by `git pull` then
-  restart. (Needs a remote the VPS can read: see Open Questions.)
+  restart. The remote is public, so no deploy key is needed, and that also means nothing secret may ever be committed (checked in the plan).
 - **Runtime.** `nix develop` from the flake builds `.venv` on first use. The unit runs
   `nix develop --command python server.py` in `app/`. One command, same environment as
   development, nothing installed globally.
@@ -120,16 +120,19 @@ Little application logic, so most checks are runtime, run by me on the VPS:
 - [ ] No secret in the repo or `ps` output; env file is 0600 and owned by `anki`.
 - [ ] README "Status" and SPEC-auth's connector questions updated with what was observed.
 
+## Decisions
+
+- Code reaches the VPS by `git clone` from the public remote (URL still to give).
+- Keep the apt-installed nix if `nix develop` works there; otherwise switch installers.
+- `anki` record is DNS only.
+
 ## Open Questions
 
-1. How does the VPS get the code? It needs a git remote it can read (a private GitHub
-   repo with a deploy key, or `rsync` from this machine). Which do you want?
-2. Is `nix` from Ubuntu's apt (2.34) acceptable, or should the Determinate/official
-   installer be used? The apt package works for this, but needs flakes enabled and its
-   daemon running. Recommended: keep the apt package if `nix develop` works; otherwise
-   switch.
-3. Is the `anki` Cloudflare record now DNS only? Confirm before I write the Caddy step.
-4. Which Caddy install: apt package with `/etc/caddy/Caddyfile`, or a docker/other setup?
-   Run `systemctl status caddy` and `caddy version` and tell me.
-5. Is `anki.panzeilkamp.com` also reachable over IPv6? If the AAAA record is missing the
-   connector still works; if present it must point at this host.
+1. What is the public remote URL?
+2. How is Caddy installed? `systemctl status caddy` says the unit does not exist, so it is
+   not the apt package. Candidates: a docker container, a binary started some other way,
+   or a differently named unit. This decides where the site block goes and how it is
+   reloaded. Run on the VPS: `ps aux | grep -i [c]addy`, `docker ps`, `which caddy`,
+   `ss -ltnp | grep -E ':80|:443'`.
+3. Is there an AAAA record for `anki.panzeilkamp.com`? If so it must point at this host
+   (`2a01:4f8:c015:19f5::1`).
