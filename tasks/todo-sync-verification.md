@@ -14,13 +14,13 @@ characterization test: add through the bridge, sync a second collection, see the
 note (required behaviour 5, H1 baseline).
 
 **Acceptance criteria:**
-- [ ] Fixture starts, serves, stops cleanly; skips with a clear reason if the server cannot start
-- [ ] `add_notes` then phone sync shows the same fields and tags; `update_note` likewise
-- [ ] `sync_before` and `sync_after` are real values ("no changes"/"synced")
+- [x] Fixture starts, serves, stops cleanly; skips with a clear reason if the server cannot start
+- [x] `add_notes` then phone sync shows the same fields and tags; `update_note` likewise
+- [x] `sync_before` and `sync_after` say "synced" (finding: `required` is NO_CHANGES even after a push, so the old "no changes" label was wrong)
 
 **Verification:**
-- [ ] `python -m pytest -q test_sync.py` passes in under 15 s
-- [ ] No leftover server process after the run (`pgrep -f anki.syncserver`)
+- [x] `python -m pytest -q test_sync.py` passes (about 5 s; the server starts per test)
+- [x] No leftover server process after the run (`pgrep -f anki.syncserver`)
 
 **Dependencies:** None
 **Files:** `test_sync.py`

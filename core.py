@@ -80,9 +80,9 @@ class Bridge:
         out = col.sync_collection(auth, sync_media=False)
         req = out.required
         R = SyncCollectionResponse.ChangesRequired
-        if req == R.NO_CHANGES:
-            return "no changes"
-        if req == R.NORMAL_SYNC:
+        # `required` says whether a full sync is needed, not whether anything moved: a completed
+        # normal sync reports NO_CHANGES even after pushing notes (see test_sync.py).
+        if req in (R.NO_CHANGES, R.NORMAL_SYNC):
             return "synced"
         raise SyncRequired(
             "AnkiWeb requires a full sync (upload or download). Nothing was "
