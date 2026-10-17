@@ -20,10 +20,11 @@ multi-user, a second host, a self-hosted sync server.
 
 ## What is already known
 
-- Caddy already runs on this VPS and serves another app (`panzeilkamp.com`). Add one
-  site block; do not replace its config.
-- DNS: `anki` A record to 49.12.74.253, now **DNS only** in Cloudflare (confirmed), so Caddy
-  gets its own certificate and the client IP header is real.
+- **nginx**, not Caddy, already runs on this VPS (ports 80 and 443, IPv4 and IPv6) and serves
+  another app (`panzeilkamp.com`). Earlier notes said Caddy; that was wrong. Add one
+  server block; do not touch the existing ones.
+- DNS: `anki` A record to 49.12.74.253, now **DNS only** in Cloudflare (confirmed), so the
+  certificate can be issued directly and the client IP header is real. There is no AAAA record.
 - You ran `sudo apt install nix` as root. The post-install step printed
   `Could not execute systemctl`, so the nix daemon may not be running. Flakes also need
   enabling in `/etc/nix/nix.conf`. Both are checked in the runbook before relying on nix.
@@ -48,9 +49,13 @@ multi-user, a second host, a self-hosted sync server.
   `Restart=on-failure`, `WorkingDirectory=…/app`, hardening (`NoNewPrivileges`,
   `ProtectSystem=strict` with `ReadWritePaths` for `data/`, `PrivateTmp`,
   `ProtectHome`). Binds `127.0.0.1:8000` only.
-- **Caddy site block** for `anki.panzeilkamp.com`: `reverse_proxy 127.0.0.1:8000`, and
-  nothing else exposed. `TRUST_PROXY=1` in the env file, because the server takes the
-  client IP from the last `X-Forwarded-For` entry that Caddy appends.
+- **nginx server block** for `anki.panzeilkamp.com` (`deploy/nginx-anki.conf`, enabled by symlink
+  into sites-enabled): TLS, then `proxy_pass http://127.0.0.1:8000` with `Host $host` (the
+  server checks the Host header), `X-Forwarded-For $proxy_add_x_forwarded_for` (appends the
+  real client last, which is the entry `TRUST_PROXY=1` reads), HTTP/1.1, `proxy_buffering off`
+  and a long `proxy_read_timeout`, because MCP streamable HTTP can hold responses open.
+  Nothing else is exposed. Certificate: whatever issues the existing site's certificates
+  (see Open Questions).
 - **Env file** (template in `deploy/env.example`, no real values): `PUBLIC_URL`,
   `OWNER_SECRET_HASH`, `DATA_DIR`, `ANKIWEB_USER`, `ANKIWEB_PASS`, `TRUST_PROXY=1`,
   `HOST=127.0.0.1`, `PORT=8000`. `ALLOW_INSECURE_NO_AUTH` must be absent.
@@ -65,7 +70,7 @@ multi-user, a second host, a self-hosted sync server.
 ## Commands
 
     Validate unit:   systemd-analyze verify deploy/anki-bridge.service
-    Validate Caddy:  caddy validate --config deploy/Caddyfile.snippet   # if caddy is installed
+    Validate nginx:  nginx -t                                           # on the VPS, before reload
     Run tests:       python -m pytest -q                                # unchanged, offline
     On the VPS:      see DEPLOY.md
     After deploy:    deploy/check.sh https://anki.panzeilkamp.com
@@ -74,7 +79,7 @@ multi-user, a second host, a self-hosted sync server.
 
     DEPLOY.md                    runbook, in the order to run it, with expected output
     deploy/anki-bridge.service   systemd unit
-    deploy/Caddyfile.snippet     site block to add to the existing Caddyfile
+    deploy/nginx-anki.conf       server block for the existing nginx
     deploy/env.example           variable names and comments, no secrets
     deploy/check.sh              post-deploy checks (curl only)
 
@@ -103,8 +108,8 @@ Little application logic, so most checks are runtime, run by me on the VPS:
 
 - Always: run as `anki`, not root; keep secrets only in the 0600 env file; run
   `check.sh` after every deploy; do the Anki desktop backup before the first download.
-- Ask first: opening any other port, touching the existing Caddy config beyond adding
-  one block, enabling the Cloudflare proxy, changing `REDIRECT_ALLOWLIST`, automating
+- Ask first: opening any other port, touching the existing nginx config beyond adding
+  one server block, enabling the Cloudflare proxy, changing `REDIRECT_ALLOWLIST`, automating
   anything that talks to AnkiWeb (cron sync).
 - Never: run the server as root; put `OWNER_SECRET_HASH`, the AnkiWeb password or a token
   in the repo, a unit file, a command line or a log; set `ALLOW_INSECURE_NO_AUTH`; run
@@ -122,17 +127,15 @@ Little application logic, so most checks are runtime, run by me on the VPS:
 
 ## Decisions
 
-- Code reaches the VPS by `git clone` from the public remote (URL still to give).
+- Code reaches the VPS by `git clone` from the public remote
+  (`https://github.com/DavySc/anki_bridge.git`; the SSH form needs a key the VPS does not have).
 - Keep the apt-installed nix if `nix develop` works there; otherwise switch installers.
 - `anki` record is DNS only.
 
 ## Open Questions
 
-1. What is the public remote URL?
-2. How is Caddy installed? `systemctl status caddy` says the unit does not exist, so it is
-   not the apt package. Candidates: a docker container, a binary started some other way,
-   or a differently named unit. This decides where the site block goes and how it is
-   reloaded. Run on the VPS: `ps aux | grep -i [c]addy`, `docker ps`, `which caddy`,
-   `ss -ltnp | grep -E ':80|:443'`.
-3. Is there an AAAA record for `anki.panzeilkamp.com`? If so it must point at this host
-   (`2a01:4f8:c015:19f5::1`).
+1. How are TLS certificates issued for the existing site (certbot, acme.sh, a Cloudflare
+   origin certificate)? I will reuse that for `anki.panzeilkamp.com`. Run on the VPS:
+   `nginx -v`, `ls /etc/nginx/sites-enabled /etc/nginx/conf.d`, `certbot certificates`.
+2. Are the existing server blocks `default_server` on 443? If so, the new block needs its own
+   `server_name` match so the other site is not affected. The same listing answers this.

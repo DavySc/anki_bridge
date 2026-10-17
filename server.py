@@ -6,9 +6,9 @@ Env:
   ANKI_COLLECTION      collection path for the owner (default <DATA_DIR>/owner/collection.anki2)
   DATA_DIR             root for per-user data and the auth database (default ./data)
   ANKIWEB_USER / ANKIWEB_PASS   AnkiWeb login (omit to run without sync)
-  HOST / PORT          bind address (default 127.0.0.1:8000, put Caddy in front)
+  HOST / PORT          bind address (default 127.0.0.1:8000, put a reverse proxy in front)
   REDIRECT_ALLOWLIST   comma-separated OAuth redirect rules (default: Claude + loopback)
-  TRUST_PROXY=1        take the client IP from the proxy's X-Forwarded-For (behind Caddy)
+  TRUST_PROXY=1        take the client IP from the proxy's X-Forwarded-For (behind a reverse proxy)
   ALLOW_INSECURE_NO_AUTH=1   dev only: no auth, and only when bound to loopback
 
 Without PUBLIC_URL and OWNER_SECRET_HASH the server refuses to start.

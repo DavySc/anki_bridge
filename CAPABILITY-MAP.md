@@ -9,7 +9,7 @@ capabilities are left. Each can ship and be verified on its own.
 |---|---|---|
 | `sync-verification` | Prove `Bridge._sync` and `bootstrap.py` work against a real AnkiWeb account, including the "full sync required" refusal path. | — |
 | `auth` | Single-user OAuth in the server itself: only the owner can authorize Claude to call tools. | — |
-| `deploy` | Run on the Hetzner VPS: systemd unit, Caddy HTTPS, secrets, one-time bootstrap download, backups. | `auth`, `sync-verification` |
+| `deploy` | Run on the Hetzner VPS: systemd unit, nginx HTTPS, secrets, one-time bootstrap download, backups. | `auth`, `sync-verification` |
 
 Build order: `sync-verification` and `auth` (independent, either first) → `deploy`
 

@@ -158,7 +158,7 @@ pytest, no network. Drive the provider and the Starlette app in-process
   text is shown. `server.py` wraps tools with `surfaced` so `BridgeError`
   messages ("Not approved...", validation errors) reach Claude. Before this the
   model only saw "Error executing tool ...".
-- Behind Caddy, the SDK's DNS-rebinding check rejects the public Host header
+- Behind a reverse proxy, the SDK's DNS-rebinding check rejects the public Host header
   unless allowed; `transport_security()` allows the PUBLIC_URL host.
 
 ## Open Questions

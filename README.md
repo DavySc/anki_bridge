@@ -46,7 +46,7 @@ refuses `ALLOW_INSECURE_NO_AUTH` on anything but a loopback `HOST`.
 | `ANKI_COLLECTION` | Owner's collection path | `<DATA_DIR>/owner/collection.anki2` |
 | `ANKIWEB_USER` / `ANKIWEB_PASS` | AnkiWeb login; omit to run without sync | unset |
 | `REDIRECT_ALLOWLIST` | Comma-separated OAuth redirect rules (`scheme://host[/path]`; no port = any port, for loopback; a path allows only that path) | `/api/mcp/auth_callback` on claude.ai and claude.com, loopback |
-| `TRUST_PROXY` | `1` = client IP from the last `X-Forwarded-For` entry (set behind Caddy) | unset |
+| `TRUST_PROXY` | `1` = client IP from the last `X-Forwarded-For` entry (set behind the reverse proxy) | unset |
 
 ## How auth works
 
@@ -115,7 +115,7 @@ timeouts, its choice of `FULL_UPLOAD`/`FULL_DOWNLOAD` (the local server only say
   per hour, at most 100 clients (idle ones evicted, never ones with tokens), 8 KB of
   metadata and 10 redirect URIs per client, 10 parked logins per client. The login
   page names the client and where it redirects; failed logins are logged with the client IP.
-- Not built: systemd unit, Caddy block (module `deploy`).
+- Not built: systemd unit, nginx block (module `deploy`).
 
 Note: this uses mcp 2.x (`MCPServer`), not the 1.x `FastMCP`. It hides the text
 of ordinary exceptions from the model, so `server.py` wraps tools in `surfaced`.

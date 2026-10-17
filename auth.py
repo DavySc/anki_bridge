@@ -633,7 +633,7 @@ def _login_form(req_id: str, who: tuple[str, str], error: str = "") -> str:
 
 
 def forwarded_client_ip(request: Request) -> str:
-    """Client IP behind one trusted reverse proxy (Caddy): the last X-Forwarded-For entry,
+    """Client IP behind one trusted reverse proxy (nginx or Caddy): the last X-Forwarded-For entry,
     which the proxy appended itself. Earlier entries are client-supplied and ignored."""
     xff = request.headers.get("x-forwarded-for", "")
     last = xff.rsplit(",", 1)[-1].strip()
@@ -641,7 +641,7 @@ def forwarded_client_ip(request: Request) -> str:
 
 
 def default_client_ip(request: Request) -> str:
-    # Behind Caddy this is the proxy unless uvicorn trusts X-Forwarded-For (deploy decides).
+    # Behind the proxy this is the proxy unless uvicorn trusts X-Forwarded-For (deploy decides).
     return request.client.host if request.client else "unknown"
 
 

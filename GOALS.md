@@ -69,7 +69,7 @@ multi-user accounts (only the seams above).
 ## Decisions
 
 - Sync: AnkiWeb (self-hosted sync server maybe later).
-- Host: Hetzner VPS, Python under systemd, Caddy for HTTPS.
+- Host: Hetzner VPS, Python under systemd, nginx for HTTPS.
 - Library: `anki` (headless), `mcp` 2.x (`MCPServer`).
 - Auth: built-in single-user OAuth, only I can authorize. See SPEC-auth.md.
 
