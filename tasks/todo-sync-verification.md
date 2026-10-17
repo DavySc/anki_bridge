@@ -98,12 +98,12 @@ code path outside `bootstrap.py` reaches `full_upload_or_download`.
 on both sides resolves and is returned by `update_note` (H3).
 
 **Acceptance criteria:**
-- [ ] Phone adds a note, bridge `add_notes` syncs before writing and both notes end up on both sides
-- [ ] Same note edited on both sides: `update_note` succeeds and returns the post-merge note
-- [ ] H1 and H3 recorded in the spec as confirmed or refuted
+- [x] Phone adds a note, bridge `add_notes` syncs before writing and both notes end up on both sides
+- [x] Same note edited on both sides: `update_note` succeeds and returns the post-merge note
+- [x] H1 and H3 recorded in the spec as confirmed or refuted
 
 **Verification:**
-- [ ] `python -m pytest -q test_sync.py` passes
+- [x] `python -m pytest -q test_sync.py` passes
 
 **Dependencies:** Task 1
 **Files:** `test_sync.py`, `SPEC-sync-verification.md` (core.py only if a bug appears)
@@ -115,13 +115,13 @@ on both sides resolves and is returned by `update_note` (H3).
 local server with `ANKIWEB_ENDPOINT`. Check the upload confirmation guard.
 
 **Acceptance criteria:**
-- [ ] `download` into an empty path produces a collection with the server's notes
-- [ ] `upload` without typing `overwrite` aborts and changes nothing on the server
-- [ ] `upload` with `overwrite` replaces the server's collection
+- [x] `download` into an empty path produces a collection with the server's notes
+- [x] `upload` without typing `overwrite` aborts and changes nothing on the server
+- [x] `upload` with `overwrite` replaces the server's collection
 - [x] H4 (server half) recorded: `server.py` has no path to either direction (covered by Task 4's test)
 
 **Verification:**
-- [ ] `python -m pytest -q test_sync.py` passes
+- [x] `python -m pytest -q test_sync.py` passes
 
 **Dependencies:** Task 1
 **Files:** `test_sync.py`, `bootstrap.py` (only if a bug appears)

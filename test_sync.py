@@ -505,3 +505,96 @@ def test_the_server_cannot_reach_a_full_sync():
     for name in ("core.py", "server.py"):
         with open(os.path.join(here, name)) as f:
             assert "full_upload_or_download" not in f.read(), name
+
+
+# ---- merging with another device (H1, H3) -----------------------------------------------------------------
+
+
+def test_a_note_added_on_the_phone_is_merged_before_the_bridge_writes(account, bridge):
+    """H1. add_notes syncs first, so the phone's note arrives and neither side loses a note."""
+    phone = account.phone()
+    note = phone.new_note(phone.models.by_name("Basic"))
+    note["Front"], note["Back"] = "from phone", "b"
+    phone.add_note(note, phone.decks.id("Physics"))
+    account.sync(phone)
+
+    bridge.add_notes([basic(front="from bridge")])
+
+    account.sync(phone)
+    on_phone = {phone.get_note(i)["Front"] for i in phone.find_notes("")}
+    assert on_phone == {"from phone", "from bridge"}
+    assert {*note_texts(Collection(bridge.path))} == on_phone
+
+
+def test_a_note_edited_on_both_sides_resolves_and_is_returned(account, bridge):
+    """H3. The bridge edit was made while disconnected (as Anki desktop would); the phone's edit
+    reached AnkiWeb first. The pre-sync resolves it and update_note returns the merged note."""
+    nid = bridge.add_notes([basic(front="shared", back="orig")])["added"][0]
+    phone = account.phone()
+    local = Collection(bridge.path)
+    n = local.get_note(nid)
+    n["Back"] = "bridge edit"
+    local.update_note(n)
+    local.close()
+
+    p = phone.get_note(nid)
+    p["Back"] = "phone edit"
+    phone.update_note(p)
+    # Note times have one-second resolution, so two edits in this test would tie; make the phone's later.
+    phone.db.execute("update notes set mod = mod + 100 where id = ?", nid)
+    account.sync(phone)
+
+    out = bridge.update_note(nid, add_tags=["merged"])["note"]
+    assert out["fields"]["Back"] == "phone edit"  # the later edit wins; the bridge's tag change is kept
+    assert "merged" in out["tags"]
+    account.sync(phone)
+    assert phone.get_note(nid)["Back"] == out["fields"]["Back"]
+    assert "merged" in phone.get_note(nid).tags
+
+
+# ---- bootstrap.py, the only code that does a full sync (Task 6) ------------------------------------------
+
+
+def run_bootstrap(account, direction: str, path: str, stdin: str = ""):
+    env = {
+        **os.environ,
+        "ANKI_COLLECTION": path,
+        "ANKIWEB_USER": account.user,
+        "ANKIWEB_PASS": account.password,
+        "ANKIWEB_ENDPOINT": account.url,
+    }
+    script = os.path.join(os.path.dirname(__file__), "bootstrap.py")
+    return subprocess.run(
+        [sys.executable, script, direction], env=env, input=stdin, capture_output=True, text=True, timeout=60
+    )
+
+
+def test_bootstrap_download_into_an_empty_path_gets_the_servers_notes(account, bridge):
+    bridge.add_notes([basic(front="on the server")])
+    path = os.path.join(tempfile.mkdtemp(), "new", "collection.anki2")  # parent directory does not exist yet
+    done = run_bootstrap(account, "download", path)
+    assert done.returncode == 0, done.stderr
+    assert list(note_texts(Collection(path))) == ["on the server"]
+
+
+def test_bootstrap_upload_without_typing_overwrite_changes_nothing(account, bridge):
+    bridge.add_notes([basic(front="keep me")])
+    other = os.path.join(tempfile.mkdtemp(), "c.anki2")
+    col = Collection(other)
+    col.decks.add_normal_deck_with_name("Other")
+    col.close()
+    done = run_bootstrap(account, "upload", other, stdin="yes\n")
+    assert done.returncode != 0 and "aborted" in done.stderr
+    assert list(note_texts(account.phone("check"))) == ["keep me"]
+
+
+def test_bootstrap_upload_with_overwrite_replaces_the_server(account, bridge):
+    bridge.add_notes([basic(front="will be replaced")])
+    other = os.path.join(tempfile.mkdtemp(), "c.anki2")
+    col = Collection(other)
+    col.decks.add_normal_deck_with_name("Other")
+    col.close()
+    done = run_bootstrap(account, "upload", other, stdin="overwrite\n")
+    assert done.returncode == 0, done.stderr
+    check = account.phone("check")
+    assert list(note_texts(check)) == [] and "Other" in [d.name for d in check.decks.all_names_and_ids()]

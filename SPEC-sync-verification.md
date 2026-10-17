@@ -105,6 +105,19 @@ play "server side" and "phone" (device B) so conflicts are real.
   response; the message names the direction when Anki gives one and otherwise says the
   choice is the human's. Nothing is written locally or on the server in any case, and a
   test fails if `core.py` or `server.py` mentions `full_upload_or_download` (H4's server half).
+- **H1 confirmed (task 5).** A note added on the phone and synced first arrives in the
+  bridge's pre-sync; after `add_notes` both devices hold both notes.
+- **H3 confirmed (task 5), with a caveat.** For a note edited on both sides, Anki keeps the
+  later edit field-wise whole-note: the phone's later `Back` won and the bridge's tag change
+  from `update_note` survived. Note modification times have one-second resolution, so two
+  edits within the same second tie, and the test sets the phone's time later to be exact.
+  Only edits made outside the bridge (e.g. Anki desktop on the same file) can conflict,
+  because the bridge syncs before every write.
+- **H4 confirmed (task 6).** `bootstrap.py download` creates the parent directory and the
+  collection; `upload` without typing `overwrite` aborts and leaves the server unchanged;
+  with `overwrite` it replaces the server's collection.
+- **Suite time.** One sync server for the session; every login still costs the server
+  about 0.4 s of password hashing, which now dominates the sync tests.
 
 ## Required behaviour (what the tests assert)
 
