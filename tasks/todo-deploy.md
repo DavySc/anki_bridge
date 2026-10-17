@@ -113,7 +113,7 @@ then phone). Watch the server log. Record what Claude does.
 - [x] Registration succeeds (dynamic client registration) or the failure is recorded with the request seen in the log
 - [x] The callback URL Claude uses is accepted by `REDIRECT_ALLOWLIST`, or the default is corrected with your approval
 - [x] Login page shows the client name; wrong secret is refused; right secret completes
-- [ ] A tool call reaches the server with a valid token; before Task 7 it answers that the collection is missing, which is expected
+- [x] A tool call reaches the server with a valid token; before Task 7 it answers that the collection is missing, which is expected
 - [ ] Phone app connects too
 
 **Verification:**
