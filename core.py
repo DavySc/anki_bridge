@@ -172,8 +172,14 @@ class Bridge:
         # normal sync reports NO_CHANGES even after pushing notes (see test_sync.py).
         if req in (R.NO_CHANGES, R.NORMAL_SYNC):
             return "synced"
+        # FULL_UPLOAD / FULL_DOWNLOAD say which side Anki would keep; FULL_SYNC leaves the choice to us.
+        # Only FULL_SYNC occurs against the bundled server (test_sync.py); the others are AnkiWeb's.
+        direction = {
+            R.FULL_UPLOAD: "AnkiWeb wants this collection uploaded, replacing what is on AnkiWeb.",
+            R.FULL_DOWNLOAD: "AnkiWeb wants its copy downloaded, replacing this collection.",
+        }.get(req, "The direction (upload or download) is yours to choose.")
         raise SyncRequired(
-            "AnkiWeb requires a full sync (upload or download). It was not done. "
+            f"AnkiWeb requires a full sync. {direction} It was not done. "
             "Run bootstrap.py by hand and choose the direction."
         )
 

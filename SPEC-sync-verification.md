@@ -99,6 +99,12 @@ play "server side" and "phone" (device B) so conflicts are real.
   "synced" without sending it (1 in ~6 round trips once logins stopped taking 300 ms). Fixed
   by moving `col.mod` past the last sync when notes or cards are unsent. A clock behind
   AnkiWeb's is not affected: only equality skips.
+- **H2 confirmed (task 4).** A schema change on either side, on both, an empty server and
+  an empty local collection all give `required = FULL_SYNC` (2) from the bundled server.
+  `FULL_UPLOAD` and `FULL_DOWNLOAD` never appeared, so they are tested with a faked
+  response; the message names the direction when Anki gives one and otherwise says the
+  choice is the human's. Nothing is written locally or on the server in any case, and a
+  test fails if `core.py` or `server.py` mentions `full_upload_or_download` (H4's server half).
 
 ## Required behaviour (what the tests assert)
 

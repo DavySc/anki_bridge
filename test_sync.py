@@ -453,3 +453,53 @@ def test_full_sync_after_a_write_warns_that_a_download_would_discard_it(account,
     fail_second_sync(bridge, SyncRequired("AnkiWeb requires a full sync (upload or download). It was not done."))
     out = bridge.add_notes([basic(front="only here")])
     assert re.search(r"discard|lose|lost", out["sync_after"], re.I), out["sync_after"]
+
+
+# ---- full sync is refused, names the direction, and is never done by the server ---------------------------
+
+
+def _change_schema(col: Collection) -> None:
+    nt = col.models.by_name("Basic")
+    col.models.add_field(nt, col.models.new_field("Extra"))
+    col.models.save(nt)
+
+
+def server_notes(account) -> int:
+    return len(account.phone("check").find_notes(""))
+
+
+def test_schema_change_elsewhere_refuses_a_write_and_changes_nothing(account, bridge):
+    """H2. Against the bundled server every full-sync demand arrives as FULL_SYNC (no direction)."""
+    phone = account.phone()
+    _change_schema(phone)
+    account._full(phone, upload=True)
+    before = snapshot(bridge.path)
+    with pytest.raises(SyncRequired) as e:
+        bridge.add_notes([basic(front="refused")])
+    msg = str(e.value)
+    assert "full sync" in msg and "yours to choose" in msg and "Nothing was written" in msg
+    assert snapshot(bridge.path) == before
+    assert server_notes(account) == 0
+
+
+@pytest.mark.parametrize(
+    "kind, words",
+    [("FULL_UPLOAD", "uploaded"), ("FULL_DOWNLOAD", "downloaded")],
+)
+def test_a_directed_full_sync_names_the_direction(account, bridge, monkeypatch, kind, words):
+    """Not reachable against the bundled server, so Anki's answer is faked at the one call."""
+    from anki.sync_pb2 import SyncCollectionResponse
+
+    fake = SyncCollectionResponse(required=getattr(SyncCollectionResponse.ChangesRequired, kind))
+    monkeypatch.setattr(bridge, "_sync_collection", lambda col: fake)
+    with pytest.raises(SyncRequired, match=words):
+        bridge.sync()
+    assert snapshot(bridge.path)[0] == 0
+
+
+def test_the_server_cannot_reach_a_full_sync():
+    """Only bootstrap.py, run by a human, may call full_upload_or_download."""
+    here = os.path.dirname(__file__)
+    for name in ("core.py", "server.py"):
+        with open(os.path.join(here, name)) as f:
+            assert "full_upload_or_download" not in f.read(), name

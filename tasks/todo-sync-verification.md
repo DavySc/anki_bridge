@@ -80,13 +80,13 @@ side, or on ours) and observe which `required` values occur. Raise
 code path outside `bootstrap.py` reaches `full_upload_or_download`.
 
 **Acceptance criteria:**
-- [ ] Each reachable full-sync kind (FULL_SYNC / FULL_UPLOAD / FULL_DOWNLOAD) raises `SyncRequired` naming the direction
-- [ ] After the refusal the local collection is unchanged and the server is unchanged
-- [ ] A test fails if `core.py` or `server.py` references `full_upload_or_download`
-- [ ] H2 recorded in the spec as confirmed or refuted, with the observed enum values
+- [x] Each reachable full-sync kind (FULL_SYNC / FULL_UPLOAD / FULL_DOWNLOAD) raises `SyncRequired` naming the direction
+- [x] After the refusal the local collection is unchanged and the server is unchanged
+- [x] A test fails if `core.py` or `server.py` references `full_upload_or_download`
+- [x] H2 recorded in the spec as confirmed or refuted, with the observed enum values
 
 **Verification:**
-- [ ] `python -m pytest -q test_sync.py` passes
+- [x] `python -m pytest -q test_sync.py` passes
 
 **Dependencies:** Task 1
 **Files:** `core.py`, `test_sync.py`, `SPEC-sync-verification.md`
@@ -118,7 +118,7 @@ local server with `ANKIWEB_ENDPOINT`. Check the upload confirmation guard.
 - [ ] `download` into an empty path produces a collection with the server's notes
 - [ ] `upload` without typing `overwrite` aborts and changes nothing on the server
 - [ ] `upload` with `overwrite` replaces the server's collection
-- [ ] H4 recorded: `server.py` has no path to either direction (covered by Task 4's test)
+- [x] H4 (server half) recorded: `server.py` has no path to either direction (covered by Task 4's test)
 
 **Verification:**
 - [ ] `python -m pytest -q test_sync.py` passes
