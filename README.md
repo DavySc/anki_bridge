@@ -69,9 +69,9 @@ Deliberately not built: user table, signup, per-user AnkiWeb credentials, quotas
 - Done: sync checked offline against Anki's bundled sync server (see "Sync tests").
 - Untested: real AnkiWeb sync. AnkiWeb-only behaviour (login rate limits, dropped
   connections that never answer) cannot be reproduced locally. Follow "First real use".
-- Done: the real Claude connector (web) registers, logs in and lists tools against
-  `https://anki.panzeilkamp.com/mcp`. Not yet checked: the phone app, and tool calls on the
-  real collection.
+- Done: the real Claude connector (web) and the phone app register, log in and
+  reach tools on `https://anki.panzeilkamp.com/mcp`. Not yet checked: tool calls on the real
+  collection.
 
 ## Sync tests
 

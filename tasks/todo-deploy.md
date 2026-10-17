@@ -114,11 +114,11 @@ then phone). Watch the server log. Record what Claude does.
 - [x] The callback URL Claude uses is accepted by `REDIRECT_ALLOWLIST`, or the default is corrected with your approval
 - [x] Login page shows the client name; wrong secret is refused; right secret completes
 - [x] A tool call reaches the server with a valid token; before Task 7 it answers that the collection is missing, which is expected
-- [ ] Phone app connects too
+- [x] Phone app connects too (same collection-missing answer)
 
 **Verification:**
 - [x] SPEC-auth Open Questions 1 and 2 answered in the spec with what was observed
-- [ ] If code changed: full suite green, pushed, pulled on the VPS, `check.sh` passes
+- [x] If code changed: full suite green, pushed, pulled on the VPS, `check.sh` passes (no code changed)
 
 **Dependencies:** Task 5
 **Files:** `SPEC-auth.md`, `server.py`/`auth.py` only if something is wrong
