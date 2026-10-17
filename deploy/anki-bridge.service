@@ -1,0 +1,33 @@
+[Unit]
+Description=anki-claude-bridge (MCP server for Anki)
+After=network-online.target nix-daemon.socket
+Wants=network-online.target
+
+[Service]
+User=anki
+Group=anki
+WorkingDirectory=/srv/anki-bridge/app
+EnvironmentFile=/srv/anki-bridge/env
+Environment=PYTHONUNBUFFERED=1
+# The flake's dev shell supplies Python 3.13 and the libraries the anki wheel needs.
+# First start builds .venv, so allow time for it.
+ExecStart=/usr/bin/nix develop --command python server.py
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=300
+
+# Hardening. The service only needs its own directory, the network and the nix daemon socket.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/anki-bridge
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

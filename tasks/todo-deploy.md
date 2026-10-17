@@ -6,20 +6,19 @@ Before every push: `jj bookmark set main -r @-` (jj does not move `main` by itse
 
 ## Task 1: Repo artifacts and offline checks [me]
 
-**Description:** Write `deploy/anki-bridge.service`, `deploy/nginx-anki.conf` (port-80 server
-block and the TLS block as two clearly separated parts), `deploy/env.example`,
+**Description:** Write `deploy/anki-bridge.service`, `deploy/nginx-anki-http.conf` (port 80, for certbot) and `deploy/nginx-anki.conf` (the full block), `deploy/env.example`,
 `deploy/check.sh`, and `DEPLOY.md` skeleton. Add a pytest that keeps them honest.
 
 **Acceptance criteria:**
-- [ ] Unit passes `systemd-analyze verify`; runs as `anki`, loopback port 8765, env file, hardening on
-- [ ] nginx block sets `Host`, `X-Forwarded-For`, `X-Forwarded-Proto`, HTTP/1.1, `proxy_buffering off`, long read timeout, and no `default_server`
-- [ ] `env.example` lists every variable the startup guard needs, has no values that look like secrets, and omits `ALLOW_INSECURE_NO_AUTH`
-- [ ] `check.sh` does the checks in the spec and exits non-zero on the first failure; no secrets on its command line
-- [ ] Test: names in `env.example` match `server.py`'s config; unit and nginx file use the same port as the example
+- [x] Unit passes `systemd-analyze verify`; runs as `anki`, loopback port 8765, env file, hardening on
+- [x] nginx block sets `Host`, `X-Forwarded-For`, `X-Forwarded-Proto`, HTTP/1.1, `proxy_buffering off`, long read timeout, and no `default_server`
+- [x] `env.example` lists every variable the startup guard needs, has no values that look like secrets, and omits `ALLOW_INSECURE_NO_AUTH`
+- [x] `check.sh` does the checks in the spec and exits non-zero on the first failure; no secrets on its command line
+- [x] Test: names in `env.example` match `server.py`'s config; unit and nginx file use the same port as the example
 
 **Verification:**
-- [ ] `python -m pytest -q` passes (under 40 s)
-- [ ] `systemd-analyze verify deploy/anki-bridge.service` is clean
+- [x] `python -m pytest -q` passes (under 40 s)
+- [x] `systemd-analyze verify deploy/anki-bridge.service` is clean
 
 **Dependencies:** None
 **Files:** `deploy/*`, `DEPLOY.md`, `test_deploy.py`
@@ -70,8 +69,8 @@ untouched. Fix hardening problems here, not later.
 
 ## Task 4: nginx and certificate [you]
 
-**Description:** Add the port-80 block for `anki.panzeilkamp.com`, run `certbot --nginx -d
-anki.panzeilkamp.com`, add the proxy block, reload. Never edit the `panzeilkamp.com` blocks.
+**Description:** Install `nginx-anki-http.conf`, run `certbot certonly --nginx -d
+anki.panzeilkamp.com` (certonly keeps certbot from rewriting our file), then install the full `nginx-anki.conf`, reload. Never edit the `panzeilkamp.com` blocks.
 
 **Acceptance criteria:**
 - [ ] `nginx -t` clean before each reload; `systemctl reload nginx`

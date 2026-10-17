@@ -79,7 +79,8 @@ multi-user, a second host, a self-hosted sync server.
 
     DEPLOY.md                    runbook, in the order to run it, with expected output
     deploy/anki-bridge.service   systemd unit
-    deploy/nginx-anki.conf       server block for the existing nginx
+    deploy/nginx-anki-http.conf  port-80 block, so certbot can issue the certificate
+    deploy/nginx-anki.conf       the full server block, installed after the certificate exists
     deploy/env.example           variable names and comments, no secrets
     deploy/check.sh              post-deploy checks (curl only)
 
@@ -137,8 +138,8 @@ Little application logic, so most checks are runtime, run by me on the VPS:
 - **Certificates: certbot with the nginx plugin**, as for the existing site
   (`/etc/letsencrypt/live/panzeilkamp.com`, renewal already managed). Order: install the
   port-80 `server_name anki.panzeilkamp.com` block first (so the HTTP challenge is answered),
-  then `certbot --nginx -d anki.panzeilkamp.com`, which adds the TLS lines and the
-  80-to-443 redirect for this name only. The existing `panzeilkamp.com` blocks are not edited.
+  then `certbot certonly --nginx -d anki.panzeilkamp.com` (issue only; our file stays the
+  source of truth), then the full block with the TLS lines and the 80-to-443 redirect. The existing `panzeilkamp.com` blocks are not edited.
 - **No `default_server`** on the existing blocks, so a new block matches by `server_name` and
   existing behaviour for other names does not change. `nginx -t` runs before every reload;
   a reload (not restart) keeps the other site up.
