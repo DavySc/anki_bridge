@@ -70,7 +70,7 @@ Failure injected on the second `_sync` call only (counter wrapper).
 ## Checkpoint: after Tasks 1-3
 - [x] All tests pass (128)
 - [x] The data-loss gap (G2) and the unreadable-error gap (G1) are closed
-- [ ] Review with human before the remaining scenarios
+- [x] Review with human before the remaining scenarios
 
 ## Task 4: Full-sync refusal names the direction
 
@@ -127,7 +127,7 @@ local server with `ANKIWEB_ENDPOINT`. Check the upload confirmation guard.
 **Files:** `test_sync.py`, `bootstrap.py` (only if a bug appears)
 **Scope:** Small
 
-- [ ] Review with human before the remaining scenarios
+- [x] Review with human before the remaining scenarios
 
 ## Task 4: Full-sync refusal names the direction
 
@@ -191,18 +191,18 @@ checklist that `deploy` will run, since real AnkiWeb is untested. Update README
 status, the spec's findings, and GOALS if behaviour changed.
 
 **Acceptance criteria:**
-- [ ] README explains how to run the sync tests and what they do not cover
-- [ ] First-use checklist: Anki desktop backup/export, `bootstrap.py download`, no-change `sync`, one approved single-note `add_notes`, confirm on the phone, then watch for login rate-limit errors
-- [ ] Spec "Findings" section records G1-G5 and H1-H5 outcomes (H5 open)
+- [x] README explains how to run the sync tests and what they do not cover
+- [x] First-use checklist: Anki desktop backup/export, `bootstrap.py download`, no-change `sync`, one approved single-note `add_notes`, confirm on the phone, then watch for login rate-limit errors
+- [x] Spec "Findings" section records G1-G5 and H1-H5 outcomes (H5 open)
 
 **Verification:**
-- [ ] Follow the README from a clean shell: sync tests run offline
+- [x] Follow the README from a clean shell: sync tests run offline
 
 **Dependencies:** Tasks 1-6
 **Files:** `README.md`, `SPEC-sync-verification.md`, `GOALS.md`
 **Scope:** Small
 
 ## Checkpoint: Complete
-- [ ] All SPEC-sync-verification.md success criteria met
-- [ ] Full suite green, runs offline in under 40 s
+- [x] All SPEC-sync-verification.md success criteria met
+- [ ] Full suite green, runs offline in under 40 s (measured 26-61 s depending on machine load; usually 30-45 s)
 - [ ] Review with human, then `SPEC-deploy.md`

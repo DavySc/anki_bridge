@@ -67,15 +67,15 @@ Deliberately not built: user table, signup, per-user AnkiWeb credentials, quotas
 - Done: six tools, validation, OAuth (clients, login, tokens, rotation, revoke),
   startup guard, tests (core logic and the HTTP auth flow, all offline).
 - Done: sync checked offline against Anki's bundled sync server (see "Sync tests").
-- Untested: real AnkiWeb sync. AnkiWeb-only behaviour (login rate limits, dropped
-  connections that never answer) cannot be reproduced locally. Follow "First real use".
-- Done: the real Claude connector (web) and the phone app register, log in and
-  reach tools on `https://anki.panzeilkamp.com/mcp`. Not yet checked: tool calls on the real
-  collection.
+- Done: running on the VPS at `https://anki.panzeilkamp.com/mcp` (systemd + nginx + Let's
+  Encrypt, see [DEPLOY.md](DEPLOY.md)). The Claude connector (web and phone) registers, logs in
+  and edits the real collection; real AnkiWeb sync works.
+- Still to watch: AnkiWeb-only behaviour the local server cannot show (login rate limits,
+  connections that hang). Look at `journalctl -u anki-bridge` for login errors in daily use.
 
 ## Sync tests
 
-    python -m pytest -q test_sync.py     # offline, about 25 s
+    python -m pytest -q test_sync.py     # offline, 30-45 s (each login costs the local server ~0.4 s)
 
 They start `python -m anki.syncserver` (shipped in the anki wheel) on localhost and use the
 real client against it: round trip between two devices, merge and conflict, wrong password,
@@ -113,7 +113,7 @@ timeouts, its choice of `FULL_UPLOAD`/`FULL_DOWNLOAD` (the local server only say
   per hour, at most 100 clients (idle ones evicted, never ones with tokens), 8 KB of
   metadata and 10 redirect URIs per client, 10 parked logins per client. The login
   page names the client and where it redirects; failed logins are logged with the client IP.
-- Not built: systemd unit, nginx block (module `deploy`).
+- Deployment (systemd unit, nginx, certificate, checks): `deploy/` and [DEPLOY.md](DEPLOY.md).
 
 Note: this uses mcp 2.x (`MCPServer`), not the 1.x `FastMCP`. It hides the text
 of ordinary exceptions from the model, so `server.py` wraps tools in `surfaced`.

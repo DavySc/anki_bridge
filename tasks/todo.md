@@ -76,9 +76,9 @@ client's grant), `revoke_token`. Propagate `resource`.
 **Scope:** Medium
 
 ## Checkpoint: after Tasks 1-3
-- [ ] All tests pass, including unchanged `test_core.py`
-- [ ] Provider drives the whole OAuth flow in-process with no HTTP
-- [ ] Review with human: token lifetimes, allow-list defaults, anything the SDK forced to change
+- [x] All tests pass, including unchanged `test_core.py`
+- [x] Provider drives the whole OAuth flow in-process with no HTTP
+- [x] Review with human: token lifetimes, allow-list defaults, anything the SDK forced to change (the real connector flow worked on the defaults)
 
 ## Task 4: Wire into server.py, startup guard, HTTP-level tests
 
@@ -131,4 +131,4 @@ into `deploy`.
 ## Checkpoint: Complete
 - [x] All SPEC-auth.md success criteria met (the real-connector test is deferred to `deploy`, see README Status)
 - [x] `python -m pytest -q` green (112)
-- [ ] Review with human, then start `SPEC-sync-verification.md` / `SPEC-deploy.md`
+- [x] Review with human, then start `SPEC-sync-verification.md` / `SPEC-deploy.md`

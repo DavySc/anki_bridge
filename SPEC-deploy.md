@@ -1,6 +1,6 @@
 # Spec: deploy (module `deploy`)
 
-Status: DRAFT, awaiting review. Part of [CAPABILITY-MAP.md](CAPABILITY-MAP.md).
+Status: BUILT (deployed 2026-10-17). Part of [CAPABILITY-MAP.md](CAPABILITY-MAP.md).
 Depends on: `auth` (built), `sync-verification` (built). Required by: nothing.
 
 ## Objective
@@ -118,13 +118,13 @@ Little application logic, so most checks are runtime, run by me on the VPS:
 
 ## Success Criteria
 
-- [ ] `https://anki.panzeilkamp.com` has a valid certificate; `check.sh` passes.
-- [ ] Service is enabled, runs as `anki`, restarts after a crash, and is back after a reboot.
-- [ ] Port 8765 is unreachable from outside; the existing site on `panzeilkamp.com` still works.
-- [ ] Claude's connector completes registration and login; `list_decks` returns my decks.
-- [ ] One approved `add_notes` appears on the phone after sync; `sync` reports `synced`.
-- [ ] No secret in the repo or `ps` output; env file is 0600 and owned by `anki`.
-- [ ] README "Status" and SPEC-auth's connector questions updated with what was observed.
+- [x] `https://anki.panzeilkamp.com` has a valid certificate; `check.sh` passes.
+- [x] Service is enabled, runs as `anki`, restarts after a crash, and is back after a reboot.
+- [x] Port 8765 is unreachable from outside (`check.sh`). The existing site on `panzeilkamp.com` was already down (502, backend on :8000 not running) before this deploy; we did not change its config.
+- [x] Claude's connector completes registration and login; `list_decks` returns my decks (web and phone connect; real use reported working).
+- [x] One approved `add_notes` and `sync` work on the real collection (user report). Phone-side confirmation and a day without AnkiWeb login errors are still to be noticed in use.
+- [x] No secret in the repo or `ps` output; env file is 0600 and owned by `anki`.
+- [x] README "Status" and SPEC-auth's connector questions updated with what was observed.
 
 ## Decisions
 

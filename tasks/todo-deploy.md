@@ -31,10 +31,10 @@ Before every push: `jj bookmark set main -r @-` (jj does not move `main` by itse
 the VPS; the plain secret never leaves your head or password manager.
 
 **Acceptance criteria:**
-- [ ] `git pull` in `/srv/anki-bridge/app` is current (includes `deploy/`)
-- [ ] `nix develop --command python auth.py hash` prints an `OWNER_SECRET_HASH`
-- [ ] `/srv/anki-bridge/env` exists, mode 0600, owner `anki`, with the values from `env.example`; `PUBLIC_URL=https://anki.panzeilkamp.com`, `TRUST_PROXY=1`, `PORT=8765`
-- [ ] No `ANKIWEB_*` yet if you want the service to start with sync off first (optional)
+- [x] `git pull` in `/srv/anki-bridge/app` is current (includes `deploy/`)
+- [x] `nix develop --command python auth.py hash` prints an `OWNER_SECRET_HASH`
+- [x] `/srv/anki-bridge/env` exists, mode 0600, owner `anki`, with the values from `env.example`; `PUBLIC_URL=https://anki.panzeilkamp.com`, `TRUST_PROXY=1`, `PORT=8765`
+- [x] No `ANKIWEB_*` yet if you want the service to start with sync off first (optional) (n/a: ANKIWEB_* were added after the download)
 
 **Verification:**
 - [ ] `stat -c '%a %U' /srv/anki-bridge/env` prints `600 anki`
@@ -129,10 +129,10 @@ then phone). Watch the server log. Record what Claude does.
 **Description:** The checklist from README "First real use", on the real collection.
 
 **Acceptance criteria:**
-- [ ] Anki desktop backup made and synced
-- [ ] `bootstrap.py download` as `anki` (with `ANKIWEB_*` in the environment), collection appears in `data/owner/`
-- [ ] `sync` through Claude returns `synced`
-- [ ] One approved `add_notes` with a single note; it shows on the phone after sync
+- [x] Anki desktop backup made and synced
+- [x] `bootstrap.py download` as `anki` (with `ANKIWEB_*` in the environment), collection appears in `data/owner/`
+- [x] `sync` through Claude returns `synced` (reported: decks were updated through Claude, no errors)
+- [x] One approved `add_notes` with a single note (reported: real use worked; phone check not separately reported)
 - [ ] No login errors from AnkiWeb in the journal after a day of use
 
 **Verification:**
@@ -145,12 +145,12 @@ then phone). Watch the server log. Record what Claude does.
 ## Task 8: Docs and status [me]
 
 **Acceptance criteria:**
-- [ ] README "Status" and "Run" reflect the deployment; stale "not built" lines removed
-- [ ] SPEC-deploy success criteria ticked; CAPABILITY-MAP shows all modules built
-- [ ] `tasks/todo.md` review boxes from `auth` ticked or dropped with a note
+- [x] README "Status" and "Run" reflect the deployment; stale "not built" lines removed
+- [x] SPEC-deploy success criteria ticked; CAPABILITY-MAP shows all modules built
+- [x] `tasks/todo.md` review boxes from `auth` ticked or dropped with a note
 
 **Verification:**
-- [ ] `python -m pytest -q` passes; pushed
+- [x] `python -m pytest -q` passes; pushed
 
 **Dependencies:** Task 7
 **Files:** `README.md`, `SPEC-deploy.md`, `CAPABILITY-MAP.md`, `tasks/todo.md`
