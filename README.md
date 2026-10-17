@@ -66,12 +66,36 @@ Deliberately not built: user table, signup, per-user AnkiWeb credentials, quotas
 
 - Done: six tools, validation, OAuth (clients, login, tokens, rotation, revoke),
   startup guard, tests (core logic and the HTTP auth flow, all offline).
-- Untested: real AnkiWeb sync (module `sync-verification`).
+- Done: sync checked offline against Anki's bundled sync server (see "Sync tests").
+- Untested: real AnkiWeb sync. AnkiWeb-only behaviour (login rate limits, dropped
+  connections that never answer) cannot be reproduced locally. Follow "First real use".
 - Untested: the real Claude connector against this server (needs HTTPS, so it
   waits for module `deploy`). Open questions to settle then: does Claude use
   dynamic client registration, and is its callback still
   `/api/mcp/auth_callback` (otherwise add it to `REDIRECT_ALLOWLIST`)? If it needs
   a fixed client, add one pre-registered client from env vars.
+
+## Sync tests
+
+    python -m pytest -q test_sync.py     # offline, about 25 s
+
+They start `python -m anki.syncserver` (shipped in the anki wheel) on localhost and use the
+real client against it: round trip between two devices, merge and conflict, wrong password,
+unreachable or stalled server, a failed sync before or after a write, full-sync refusal, and
+`bootstrap.py` download and upload. They do not cover real AnkiWeb: its rate limits, its
+timeouts, its choice of `FULL_UPLOAD`/`FULL_DOWNLOAD` (the local server only says `FULL_SYNC`).
+
+## First real use (do this once, watching)
+
+1. In Anki desktop, make a backup (File, Export, with scheduling) and sync it, so AnkiWeb
+   holds what you want to keep.
+2. Set `ANKIWEB_USER` / `ANKIWEB_PASS`, then `python bootstrap.py download`.
+3. Call `sync` from Claude. Expect `synced` and no errors.
+4. Approve a single `add_notes` with one note. Check it on your phone after its sync.
+5. Watch for login errors for a day. AnkiWeb may rate-limit logins; the server logs in once
+   per process and renews only when AnkiWeb rejects the key.
+6. If anything asks for a full sync, the server refuses and says which direction Anki
+   suggests. Decide by hand with `bootstrap.py`; the server never does it.
 
 ## Safeguards worth knowing
 

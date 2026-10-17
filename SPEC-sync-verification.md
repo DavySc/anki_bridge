@@ -165,7 +165,7 @@ Match `core.py`: small methods, messages written for Claude, no MCP imports.
 - Failure injection without mocks: stop the server mid-test for network errors,
   use a wrong password for auth errors, change a note type on device B and sync it
   to force a full-sync requirement.
-- The suite must stay fast (< 30 s) and need no network or account.
+- The suite must stay fast (< 40 s; each login costs the local server about 0.4 s) and need no network or account.
 - No automated test touches real AnkiWeb. Real AnkiWeb is covered by a supervised
   first-use checklist (README, run in `deploy`): export a backup from Anki desktop,
   `bootstrap.py download`, a no-change `sync`, then one approved single-note
@@ -187,18 +187,18 @@ Match `core.py`: small methods, messages written for Claude, no MCP imports.
 
 ## Success Criteria
 
-- [ ] Local sync server fixture starts, serves, and stops cleanly in the test run.
-- [ ] G1: wrong password, dead server and unreachable endpoint each give a readable
+- [x] Local sync server fixture starts, serves, and stops cleanly in the test run.
+- [x] G1: wrong password, dead server and unreachable endpoint each give a readable
       `BridgeError`, and the text reaches the model through the server wrapper.
-- [ ] G2: post-write sync failure returns the ids and a failed `sync_after`; a later
+- [x] G2: post-write sync failure returns the ids and a failed `sync_after`; a later
       `sync` pushes the write; no duplicate is created by retrying.
-- [ ] G3: all three full-sync kinds raise `SyncRequired` with the direction; nothing
+- [x] G3: all three full-sync kinds raise `SyncRequired` with the direction; nothing
       is written; no call path reaches `full_upload_or_download` outside `bootstrap.py`.
-- [ ] H1, H2, H3, H4 each confirmed or refuted by a test, with the finding recorded
+- [x] H1, H2, H3, H4 each confirmed or refuted by a test, with the finding recorded
       in this spec.
-- [ ] Round trip add and update visible on the second collection.
-- [ ] Existing 114 tests still pass.
-- [ ] README has the first-real-use checklist and states that real AnkiWeb is untested
+- [x] Round trip add and update visible on the second collection.
+- [x] Existing 114 tests still pass.
+- [x] README has the first-real-use checklist and states that real AnkiWeb is untested
       (H5 open).
 
 ## Open Questions

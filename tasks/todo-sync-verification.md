@@ -127,6 +127,63 @@ local server with `ANKIWEB_ENDPOINT`. Check the upload confirmation guard.
 **Files:** `test_sync.py`, `bootstrap.py` (only if a bug appears)
 **Scope:** Small
 
+- [ ] Review with human before the remaining scenarios
+
+## Task 4: Full-sync refusal names the direction
+
+**Description:** Force full-sync requirements locally (schema change on the phone
+side, or on ours) and observe which `required` values occur. Raise
+`SyncRequired` with the direction Anki asked for. Prove nothing is written and no
+code path outside `bootstrap.py` reaches `full_upload_or_download`.
+
+**Acceptance criteria:**
+- [x] Each reachable full-sync kind (FULL_SYNC / FULL_UPLOAD / FULL_DOWNLOAD) raises `SyncRequired` naming the direction
+- [x] After the refusal the local collection is unchanged and the server is unchanged
+- [x] A test fails if `core.py` or `server.py` references `full_upload_or_download`
+- [x] H2 recorded in the spec as confirmed or refuted, with the observed enum values
+
+**Verification:**
+- [x] `python -m pytest -q test_sync.py` passes
+
+**Dependencies:** Task 1
+**Files:** `core.py`, `test_sync.py`, `SPEC-sync-verification.md`
+**Scope:** Medium
+
+## Task 5: Merge and conflict behaviour
+
+**Description:** Edits on the phone merge before our write (H1), and a note edited
+on both sides resolves and is returned by `update_note` (H3).
+
+**Acceptance criteria:**
+- [x] Phone adds a note, bridge `add_notes` syncs before writing and both notes end up on both sides
+- [x] Same note edited on both sides: `update_note` succeeds and returns the post-merge note
+- [x] H1 and H3 recorded in the spec as confirmed or refuted
+
+**Verification:**
+- [x] `python -m pytest -q test_sync.py` passes
+
+**Dependencies:** Task 1
+**Files:** `test_sync.py`, `SPEC-sync-verification.md` (core.py only if a bug appears)
+**Scope:** Small
+
+## Task 6: bootstrap.py against the local server
+
+**Description:** Run `bootstrap.py download` and `upload` as subprocesses against the
+local server with `ANKIWEB_ENDPOINT`. Check the upload confirmation guard.
+
+**Acceptance criteria:**
+- [x] `download` into an empty path produces a collection with the server's notes
+- [x] `upload` without typing `overwrite` aborts and changes nothing on the server
+- [x] `upload` with `overwrite` replaces the server's collection
+- [x] H4 (server half) recorded: `server.py` has no path to either direction (covered by Task 4's test)
+
+**Verification:**
+- [x] `python -m pytest -q test_sync.py` passes
+
+**Dependencies:** Task 1
+**Files:** `test_sync.py`, `bootstrap.py` (only if a bug appears)
+**Scope:** Small
+
 ## Task 7: Docs and first-real-use checklist
 
 **Description:** Document the local-server tests and write the supervised first-use
@@ -147,5 +204,5 @@ status, the spec's findings, and GOALS if behaviour changed.
 
 ## Checkpoint: Complete
 - [ ] All SPEC-sync-verification.md success criteria met
-- [ ] Full suite green, runs offline in under 30 s
+- [ ] Full suite green, runs offline in under 40 s
 - [ ] Review with human, then `SPEC-deploy.md`

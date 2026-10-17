@@ -1,6 +1,6 @@
 # Spec: auth (module `auth`)
 
-Status: DRAFT, awaiting review. Part of [CAPABILITY-MAP.md](CAPABILITY-MAP.md).
+Status: BUILT. Part of [CAPABILITY-MAP.md](CAPABILITY-MAP.md).
 Depends on: nothing. Required by: `deploy`.
 
 ## Objective

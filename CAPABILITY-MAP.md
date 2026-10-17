@@ -1,6 +1,6 @@
 # Capability Map: anki-claude-bridge, remaining work
 
-Status: APPROVED. Specs: SPEC-auth.md (built), SPEC-sync-verification.md (draft).
+Status: APPROVED. Specs: SPEC-auth.md (built), SPEC-sync-verification.md (built).
 
 The six tools, validation and core tests are done (see README "Status"). Three
 capabilities are left. Each can ship and be verified on its own.

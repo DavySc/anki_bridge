@@ -42,7 +42,7 @@ T2-T6 only depend on T1; the order is by risk (data-loss gap G2 first).
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Local server behaves differently from AnkiWeb | High | Accepted and documented: same protocol and client, but AnkiWeb-only behaviour (rate limits, timeouts, size limits) is untested. Mitigated by the supervised first use in `deploy` and an Anki desktop backup before it |
-| Bundled sync server flaky or slow to start | Med | Readiness poll with timeout, `skip` with a clear reason if it cannot start, never a hang. Suite budget under 30 s |
+| Bundled sync server flaky or slow to start | Med | Readiness poll with timeout, `skip` with a clear reason if it cannot start, never a hang. Suite budget under 40 s |
 | Forcing a full-sync requirement is fiddly | Med | Schema change on device B (modify a note type) then sync; T4 first discovers which enum value each scenario yields |
 | Python-side test of "no path reaches full upload" is brittle | Low | A small AST/grep test limited to `core.py` and `server.py`, failing with the offending line |
 | Fixing G2 changes tool output shape | Low | Only the existing `sync_after` string changes; spec marks any other shape change as ask-first |
