@@ -11,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import ipaddress
+import logging
 import os
 import sqlite3
 import getpass
@@ -21,7 +22,7 @@ import sys
 import threading
 import time
 from collections import defaultdict, deque
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlparse
 
 from contextlib import contextmanager
@@ -39,16 +40,20 @@ from mcp.server.auth.provider import (
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+logger = logging.getLogger("anki_bridge.auth")
 
 # The one place the owner's subject is defined. Do not repeat the literal.
 OWNER_SUBJECT = "owner"
 
-# Rule = scheme://host. A rule without a port allows any port, which is only
-# sensible for loopback; a non-loopback rule must match the URI's host exactly.
+# Rule = scheme://host[:port][/path]. A rule without a port allows any port, which is only
+# sensible for loopback; a non-loopback rule must match the URI's host exactly. A rule with a
+# path allows only that path: any page on claude.ai that leaked its URL would leak the code.
 DEFAULT_REDIRECT_ALLOWLIST = [
-    "https://claude.ai",
-    "https://claude.com",
+    "https://claude.ai/api/mcp/auth_callback",
+    "https://claude.com/api/mcp/auth_callback",
     "http://127.0.0.1",
     "http://localhost",
     "http://[::1]",
@@ -61,8 +66,8 @@ def derive_server_key(owner_secret_hash: str) -> bytes:
     return hmac.new(b"anki-claude-bridge/server-key/v1", owner_secret_hash.encode(), hashlib.sha256).digest()
 
 
-def redirect_allowlist_from_env() -> list[str]:
-    raw = os.environ.get("REDIRECT_ALLOWLIST")
+def redirect_allowlist_from_env(env: Mapping[str, str] = os.environ) -> list[str]:
+    raw = env.get("REDIRECT_ALLOWLIST")
     if not raw:
         return list(DEFAULT_REDIRECT_ALLOWLIST)
     return [r.strip() for r in raw.split(",") if r.strip()]
@@ -135,6 +140,8 @@ def _allowed(uri: str, rules: list[str]) -> bool:
         r = urlparse(rule)
         if u.scheme != r.scheme or u.hostname != r.hostname:
             continue
+        if r.path not in ("", "/") and u.path != r.path:
+            continue
         if r.port is not None:
             if u.port == r.port:
                 return True
@@ -147,6 +154,14 @@ PENDING_TTL = 600  # seconds a login page stays valid
 CODE_TTL = 300  # seconds an authorization code stays valid
 ACCESS_TTL = 3600  # 1 hour
 REFRESH_TTL = 30 * 24 * 3600  # 30 days
+
+# Registration and /authorize are open to anyone, so what they can store is bounded.
+MAX_CLIENTS = 100  # idle clients are evicted oldest first; clients holding tokens never are
+MAX_CLIENT_METADATA = 8 * 1024  # bytes stored per client; a normal registration is under 1 KB
+MAX_REDIRECT_URIS = 10
+MAX_PENDING_PER_CLIENT = 10  # parked logins per client; the oldest are dropped
+REGISTRATIONS_PER_IP = 10  # per REGISTRATION_WINDOW; Claude registers once per connector
+REGISTRATION_WINDOW = 3600
 
 
 # A grant is one successful login. Its id ties together the code and every token
@@ -193,7 +208,11 @@ class OwnerProvider:
         self.redirect_allowlist = list(
             DEFAULT_REDIRECT_ALLOWLIST if redirect_allowlist is None else redirect_allowlist
         )
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        # Clients and token hashes are for the server's eyes only (SQLite gives its journal the
+        # database's mode).
+        os.makedirs(os.path.dirname(os.path.abspath(path)), mode=0o700, exist_ok=True)
+        os.close(os.open(path, os.O_CREAT | os.O_WRONLY, 0o600))
+        os.chmod(path, 0o600)
         self._lock = threading.Lock()
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.execute(
@@ -240,18 +259,42 @@ class OwnerProvider:
         uris = [str(u) for u in client_info.redirect_uris or []]
         if not uris:
             raise RegistrationError("invalid_redirect_uri", "at least one redirect_uri is required")
+        if len(uris) > MAX_REDIRECT_URIS:
+            raise RegistrationError("invalid_redirect_uri", f"at most {MAX_REDIRECT_URIS} redirect_uris")
         for uri in uris:
             if not _allowed(uri, self.redirect_allowlist):
                 raise RegistrationError("invalid_redirect_uri", f"redirect_uri not allowed: {uri}")
+        stored = client_info.model_copy(update={"client_secret": None}).model_dump_json()
+        if len(stored.encode()) > MAX_CLIENT_METADATA:
+            raise RegistrationError("invalid_client_metadata", f"client metadata over {MAX_CLIENT_METADATA} bytes")
         # The SDK compares the presented client_secret with what get_client returns, so a
         # hash will not do. Instead the secret is derived from a server key and never stored:
         # replace the random one the SDK minted (it echoes this same object to the client).
         if client_info.token_endpoint_auth_method != "none" and client_info.client_secret is not None:
             client_info.client_secret = self._client_secret(client_info.client_id)
-        self._exec(
-            "INSERT INTO clients (client_id, info) VALUES (?, ?)",
-            (client_info.client_id, client_info.model_copy(update={"client_secret": None}).model_dump_json()),
-        )
+        with self._tx() as db:
+            self._make_room_for_a_client(db)
+            db.execute("INSERT INTO clients (client_id, info) VALUES (?, ?)", (client_info.client_id, stored))
+
+    def _make_room_for_a_client(self, db: sqlite3.Connection) -> None:
+        """Evict the oldest clients that hold no live token or unused code, so one more fits."""
+        excess = db.execute("SELECT COUNT(*) FROM clients").fetchone()[0] - MAX_CLIENTS + 1
+        if excess <= 0:
+            return
+        now = self._now()
+        idle = db.execute(
+            "SELECT client_id FROM clients WHERE client_id NOT IN ("
+            " SELECT client_id FROM access_tokens WHERE expires_at >= ?"
+            " UNION SELECT client_id FROM refresh_tokens WHERE expires_at >= ?"
+            " UNION SELECT client_id FROM codes WHERE expires_at >= ? AND used = 0)"
+            " ORDER BY rowid LIMIT ?",
+            (now, now, now, excess),
+        ).fetchall()
+        if len(idle) < excess:
+            raise RegistrationError("invalid_client_metadata", "too many registered clients")
+        for (client_id,) in idle:
+            db.execute("DELETE FROM clients WHERE client_id = ?", (client_id,))
+            db.execute("DELETE FROM pending WHERE client_id = ?", (client_id,))
 
     # ---- authorize -> login -> code -----------------------------------------
 
@@ -260,16 +303,34 @@ class OwnerProvider:
         if self.resource_url and params.resource and params.resource.rstrip("/") != self.resource_url:
             raise AuthorizeError("invalid_target", "unknown resource")
         req_id = secrets.token_urlsafe(32)
-        self._exec("DELETE FROM pending WHERE expires_at < ?", (self._now(),))
-        self._exec(
-            "INSERT INTO pending (req_hash, client_id, params, expires_at) VALUES (?, ?, ?, ?)",
-            (_sha256(req_id), client.client_id, params.model_dump_json(), self._now() + PENDING_TTL),
-        )
+        with self._tx() as db:
+            db.execute("DELETE FROM pending WHERE expires_at < ?", (self._now(),))
+            db.execute(
+                "INSERT INTO pending (req_hash, client_id, params, expires_at) VALUES (?, ?, ?, ?)",
+                (_sha256(req_id), client.client_id, params.model_dump_json(), self._now() + PENDING_TTL),
+            )
+            db.execute(
+                "DELETE FROM pending WHERE client_id = ? AND rowid NOT IN"
+                " (SELECT rowid FROM pending WHERE client_id = ? ORDER BY rowid DESC LIMIT ?)",
+                (client.client_id, client.client_id, MAX_PENDING_PER_CLIENT),
+            )
         return construct_redirect_uri(f"{self.public_url}/login", req=req_id)
 
-    def pending_exists(self, req_id: str) -> bool:
-        rows = self._exec("SELECT expires_at FROM pending WHERE req_hash = ?", (_sha256(req_id),))
-        return bool(rows) and rows[0][0] >= self._now()
+    def pending_login(self, req_id: str) -> tuple[str, str] | None:
+        """(client name, redirect host) of a live login request, for the login page to show.
+        Anyone can register a client and send the owner a real login link, so the page says who
+        asks. None if the request is unknown or expired."""
+        rows = self._exec(
+            "SELECT p.params, p.expires_at, c.info FROM pending p JOIN clients c USING (client_id)"
+            " WHERE p.req_hash = ?",
+            (_sha256(req_id),),
+        )
+        if not rows or rows[0][1] < self._now():
+            return None
+        params, _, info = rows[0]
+        name = json.loads(info).get("client_name") or "A client without a name"
+        redirect = urlparse(str(AuthorizationParams.model_validate_json(params).redirect_uri))
+        return name, redirect.netloc
 
     def complete_login(self, req_id: str, subject: str) -> str | None:
         """Consume the pending request and return the client's redirect URL with a fresh code.
@@ -469,8 +530,23 @@ class OwnerProvider:
 # ---- login page ----------------------------------------------------------------
 
 
+def rate_limit_key(ip: str) -> str:
+    """The rate-limit bucket for a client address. An IPv6 /64 is one subscriber, who can use
+    every address in it; IPv4 (also IPv4-mapped IPv6) counts per address."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return f"ip:{ip}"
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped:
+            return f"ip:{addr.ipv4_mapped}"
+        return f"ip:{ipaddress.IPv6Network((addr, 64), strict=False)}"
+    return f"ip:{addr}"
+
+
 class LoginLimiter:
-    """Failed-login limit per key within a window. In memory, single process.
+    """Event limit per key within a window: failed logins, and client registrations. In memory,
+    single process.
 
     Keys are chosen by the caller from things the attacker cannot vary freely
     (client IP, and a global bucket), never from the claimed username alone.
@@ -478,10 +554,10 @@ class LoginLimiter:
 
     def __init__(self, max_failures: int = 5, window: float = 900, now: Callable[[], float] = time.time):
         self.max, self.window, self._now = max_failures, window, now
-        self._fails: dict[str, deque[float]] = defaultdict(deque)
+        self._events: dict[str, deque[float]] = defaultdict(deque)
 
     def _recent(self, key: str) -> deque[float]:
-        q = self._fails[key]
+        q = self._events[key]
         while q and q[0] <= self._now() - self.window:
             q.popleft()
         return q
@@ -489,11 +565,39 @@ class LoginLimiter:
     def blocked(self, key: str, limit: int | None = None) -> bool:
         return len(self._recent(key)) >= (limit or self.max)
 
-    def fail(self, key: str) -> None:
+    def hit(self, key: str) -> None:
         self._recent(key).append(self._now())
+        if len(self._events) > 1024:  # one key per client IP; anyone can add IPs
+            cutoff = self._now() - self.window
+            for k in [k for k, q in self._events.items() if not q or q[-1] <= cutoff]:
+                del self._events[k]
 
     def clear(self, key: str) -> None:
-        self._fails.pop(key, None)
+        self._events.pop(key, None)
+
+
+class RegistrationLimit:
+    """ASGI wrapper for the SDK's /register endpoint: each client IP may register a few clients
+    per window. The provider bounds what is stored; this bounds how fast anyone can churn it."""
+
+    def __init__(self, app: ASGIApp, limiter: LoginLimiter, client_ip: Callable[[Request], str]):
+        self.app, self.limiter, self.client_ip = app, limiter, client_ip
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["method"] == "POST":
+            ip = self.client_ip(Request(scope))
+            key = rate_limit_key(ip)
+            if self.limiter.blocked(key):
+                logger.warning("client registration refused: rate limit (client %r)", ip)
+                response = JSONResponse(
+                    {"error": "too_many_requests", "error_description": "too many client registrations; try later"},
+                    status_code=429,
+                    headers={"Retry-After": str(int(self.limiter.window))},
+                )
+                await response(scope, receive, send)
+                return
+            self.limiter.hit(key)  # every registration counts
+        await self.app(scope, receive, send)
 
 
 GLOBAL_FAILURE_LIMIT = 25  # across all IPs, so rotating IPs does not help
@@ -515,15 +619,28 @@ def _page(body: str, status: int = 200) -> HTMLResponse:
     return HTMLResponse(_PAGE.format(body=body), status_code=status, headers=_NO_STORE)
 
 
+def _login_form(req_id: str, who: tuple[str, str], error: str = "") -> str:
+    name, host = who
+    return (
+        (f"<p class=e>{error}</p>" if error else "")
+        + f"<p><b>{html.escape(name[:100])}</b> asks for access to your Anki collection. After you"
+        f" log in, your browser goes to <b>{html.escape(host)}</b>. If you did not just connect"
+        " Claude to this server, close this page.</p>"
+        f'<form method="post"><input type="hidden" name="req" value="{html.escape(req_id)}">'
+        '<input type="password" name="secret" placeholder="Owner secret" autofocus required>'
+        "<button>Authorize</button></form>"
+    )
+
+
 def forwarded_client_ip(request: Request) -> str:
     """Client IP behind one trusted reverse proxy (Caddy): the last X-Forwarded-For entry,
     which the proxy appended itself. Earlier entries are client-supplied and ignored."""
     xff = request.headers.get("x-forwarded-for", "")
     last = xff.rsplit(",", 1)[-1].strip()
-    return last or _default_client_ip(request)
+    return last or default_client_ip(request)
 
 
-def _default_client_ip(request: Request) -> str:
+def default_client_ip(request: Request) -> str:
     # Behind Caddy this is the proxy unless uvicorn trusts X-Forwarded-For (deploy decides).
     return request.client.host if request.client else "unknown"
 
@@ -532,7 +649,7 @@ def make_login_handler(
     provider: OwnerProvider,
     authenticator: Authenticator,
     limiter: LoginLimiter,
-    client_ip: Callable[[Request], str] = _default_client_ip,
+    client_ip: Callable[[Request], str] = default_client_ip,
 ):
     """Starlette handler for GET/POST /login. Register it unauthenticated (custom_route)."""
 
@@ -543,31 +660,27 @@ def make_login_handler(
         else:
             form = None
             req_id = request.query_params.get("req", "")
-        if not req_id or not provider.pending_exists(req_id):
+        who = provider.pending_login(req_id) if req_id else None
+        if who is None:
             return _page("<p class=e>This login link is invalid or has expired. Start again from Claude.</p>", 400)
 
         if form is None:
-            return _page(
-                f'<form method="post"><input type="hidden" name="req" value="{html.escape(req_id)}">'
-                '<input type="password" name="secret" placeholder="Owner secret" autofocus required>'
-                "<button>Authorize Claude</button></form>"
-            )
+            return _page(_login_form(req_id, who))
 
-        ip_key = f"ip:{client_ip(request)}"
+        ip = client_ip(request)
+        ip_key = rate_limit_key(ip)
         if limiter.blocked(ip_key) or limiter.blocked("global", GLOBAL_FAILURE_LIMIT):
+            logger.warning("login refused: too many failed attempts (client %r)", ip)
             return _page("<p class=e>Too many failed attempts. Try again later.</p>", 429)
 
         credentials = {k: str(v) for k, v in form.items() if k in ("username", "secret")}
         subject = authenticator.authenticate(credentials)
         if subject is None:
-            limiter.fail(ip_key)
-            limiter.fail("global")
-            return _page(
-                f'<p class=e>Wrong secret.</p><form method="post"><input type="hidden" name="req" '
-                f'value="{html.escape(req_id)}"><input type="password" name="secret" '
-                'placeholder="Owner secret" autofocus required><button>Authorize Claude</button></form>',
-                401,
-            )
+            limiter.hit(ip_key)
+            limiter.hit("global")
+            logger.warning("login failed: wrong secret (client %r)", ip)
+            return _page(_login_form(req_id, who, "Wrong secret."), 401)
+        logger.info("login succeeded for %s (client %r)", subject, ip)
         limiter.clear(ip_key)
         url = provider.complete_login(req_id, subject)
         if url is None:

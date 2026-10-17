@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -160,6 +161,24 @@ def test_add_and_update_reach_a_second_device(account, bridge):
     account.sync(phone)
     assert phone.get_note(nid)["Back"] == "Rayleigh scattering of sunlight"
     assert "checked" in phone.get_note(nid).tags
+    phone.close()
+
+
+def test_a_write_in_the_same_millisecond_as_the_last_sync_is_still_sent(account, bridge):
+    """Anki compares the collection's mod time with the last sync's and skips the sync when they
+    are equal. Writing right after the pre-sync can land in that millisecond (seen about 1 in 6
+    runs of the round trip above once logins stopped taking 300 ms)."""
+    nid = bridge.add_notes([basic(front="q")])["added"][0]
+    col = Collection(bridge.path)
+    note = col.get_note(nid)
+    note["Back"] = "edited"
+    col.update_note(note)
+    col.db.execute("UPDATE col SET mod = ls")  # as if the edit happened in the sync's millisecond
+    col.close()
+
+    assert bridge.sync() == {"result": "synced"}
+    phone = account.phone()
+    assert phone.get_note(nid)["Back"] == "edited"
     phone.close()
 
 
@@ -320,3 +339,117 @@ def test_full_sync_required_after_the_write_is_reported_not_raised(account, brid
     assert len(out["added"]) == 1
     assert out["sync_after"].startswith("failed:") and "full sync" in out["sync_after"]
     assert "Run sync to retry" not in out["sync_after"]  # retrying would not help
+
+
+# ---- spend no AnkiWeb round trips on requests that cannot succeed ------------------------------
+
+
+def test_malformed_write_fails_before_contacting_ankiweb(account, bridge):
+    """With AnkiWeb down, a malformed request must report the malformation, not the network."""
+    account.server.stop()
+    with pytest.raises(BridgeError) as e:
+        bridge.add_notes([basic(tags="claude")])  # tags must be a list
+    assert "AnkiWeb" not in str(e.value)
+
+
+def test_writes_reuse_one_ankiweb_login(account, bridge, monkeypatch):
+    """Every write logged in twice, every sync once; AnkiWeb may rate-limit logins (H5)."""
+    logins = []
+    real = Collection.sync_login
+    monkeypatch.setattr(Collection, "sync_login", lambda self, *a, **kw: logins.append(1) or real(self, *a, **kw))
+
+    nid = bridge.add_notes([basic(front="one")])["added"][0]
+    bridge.update_note(nid, fields={"Back": "edited"})
+    bridge.sync()
+    assert len(logins) == 1
+
+
+def test_a_rejected_login_key_is_renewed_once(account, bridge, monkeypatch):
+    """The cached key can expire or be revoked; AnkiWeb then answers as for a wrong password."""
+    from anki.sync_pb2 import SyncAuth
+
+    bridge.sync()
+    bridge._auth = SyncAuth(hkey="revoked", endpoint=account.url)
+    logins = []
+    real = Collection.sync_login
+    monkeypatch.setattr(Collection, "sync_login", lambda self, *a, **kw: logins.append(1) or real(self, *a, **kw))
+    assert bridge.sync() == {"result": "synced"}
+    assert len(logins) == 1
+
+
+# ---- a stalled AnkiWeb must not stall every tool --------------------------------------------------
+
+class Blackhole:
+    """Accepts connections and never answers: a server that silently stalls. Anki waits ~31 s."""
+
+    def __init__(self):
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(16)
+        self.url = f"http://127.0.0.1:{self.sock.getsockname()[1]}/"
+        self.held: list[socket.socket] = []
+        self.connected = threading.Event()
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            self.held.append(conn)
+            self.connected.set()
+
+    def close(self):
+        """Ends the stall: the waiting client sees the connection close and fails at once."""
+        self.sock.close()
+        for conn in self.held:
+            conn.close()
+
+
+def run_into(out: list, fn) -> None:
+    try:
+        out.append(fn())
+    except Exception as e:
+        out.append(e)
+
+
+@pytest.mark.parametrize("other", ["list_decks", "add_notes"])
+def test_a_stalled_sync_does_not_block_other_tools(other, monkeypatch):
+    monkeypatch.setattr("core.LOCK_WAIT", 0.3)  # the real 3 s only slows the test
+    hole = Blackhole()
+    path = os.path.join(tempfile.mkdtemp(), "c.anki2")
+    col = Collection(path)
+    col.decks.add_normal_deck_with_name("Physics")
+    col.close()
+    b = Bridge(path, SyncConfig("user", "pass", hole.url))
+
+    first, second, waiting = [], [], None
+    stalled = threading.Thread(target=run_into, args=(first, b.sync))
+    stalled.start()
+    try:
+        assert hole.connected.wait(5), "the first sync never reached the server"
+        call = b.list_decks if other == "list_decks" else (lambda: b.add_notes([basic(front="second")]))
+        waiting = threading.Thread(target=run_into, args=(second, call))
+        waiting.start()
+        waiting.join(5)
+        assert not waiting.is_alive(), f"{other} waited behind a stalled sync"
+        # It may answer, or refuse with a readable "busy" error; anything else is a crash.
+        assert not isinstance(second[0], Exception) or isinstance(second[0], BridgeError)
+    finally:
+        hole.close()
+        stalled.join(10)
+        if waiting is not None:
+            waiting.join(10)
+
+
+# ---- a full sync demanded after a write ---------------------------------------------------------------
+
+
+def test_full_sync_after_a_write_warns_that_a_download_would_discard_it(account, bridge):
+    """bootstrap.py says to "normally" download; after a write that would lose the new notes."""
+    import re
+
+    fail_second_sync(bridge, SyncRequired("AnkiWeb requires a full sync (upload or download). It was not done."))
+    out = bridge.add_notes([basic(front="only here")])
+    assert re.search(r"discard|lose|lost", out["sync_after"], re.I), out["sync_after"]

@@ -88,7 +88,7 @@ def test_disallowed_redirect_uri_rejected(provider, uri):
 
 def test_one_bad_uri_rejects_the_whole_registration(provider):
     with pytest.raises(RegistrationError):
-        run(provider.register_client(client(redirects=["https://claude.ai/cb", "https://evil.example/cb"])))
+        run(provider.register_client(client(redirects=["https://claude.ai/api/mcp/auth_callback", "https://evil.example/cb"])))
 
 
 @pytest.mark.parametrize("redirects", [None, []])
@@ -297,9 +297,22 @@ def test_global_limit_covers_rotating_ips():
     clock = Clock()
     lim = LoginLimiter(now=clock)
     for i in range(GLOBAL_FAILURE_LIMIT):
-        lim.fail("global")
-        lim.fail(f"ip:{i}")
+        lim.hit("global")
+        lim.hit(f"ip:{i}")
     assert not lim.blocked("ip:1") and lim.blocked("global", GLOBAL_FAILURE_LIMIT)
+
+
+def test_limiter_forgets_addresses_whose_window_has_passed():
+    """Registration adds one key per client IP, and anyone can bring new IPs."""
+    clock = Clock()
+    lim = LoginLimiter(max_failures=1, window=60, now=clock)
+    for i in range(2000):
+        lim.hit(f"ip:old-{i}")
+    clock.t += 61
+    for i in range(2000):
+        lim.hit(f"ip:new-{i}")
+    assert not [k for k in lim._events if k.startswith("ip:old")]
+    assert lim.blocked("ip:new-1999")
 
 
 def test_pending_request_is_single_use(env):
@@ -562,7 +575,7 @@ def test_client_secret_depends_on_server_key_and_client_id(provider):
 
 def test_public_clients_keep_no_secret(provider):
     info = OAuthClientInformationFull(
-        client_id="pub", redirect_uris=["https://claude.ai/cb"], token_endpoint_auth_method="none"
+        client_id="pub", redirect_uris=["https://claude.ai/api/mcp/auth_callback"], token_endpoint_auth_method="none"
     )
     run(provider.register_client(info))
     assert run(provider.get_client("pub")).client_secret is None
@@ -580,3 +593,101 @@ def test_forwarded_ip_uses_the_proxy_appended_entry():
 
     assert forwarded_client_ip(req({"x-forwarded-for": "6.6.6.6, 1.2.3.4"})) == "1.2.3.4"  # spoofed prefix ignored
     assert forwarded_client_ip(req({})) == "10.0.0.1"
+
+
+# ---- anonymous callers cannot grow storage without bound -------------------------------------
+
+
+def test_client_table_stays_bounded_and_keeps_clients_in_use(env):
+    prov, tc, _, _ = env
+    c, _, tok = tokens_for(prov, tc)  # c1 completed a login and holds tokens
+    for i in range(1000):
+        run(prov.register_client(client(client_id=f"flood-{i}")))
+    assert prov._exec("SELECT COUNT(*) FROM clients")[0][0] <= 100
+    assert run(prov.get_client("c1")) is not None
+    assert run(prov.load_refresh_token(c, tok.refresh_token)) is not None
+
+
+def test_parked_logins_stay_bounded_and_the_newest_still_works(env):
+    prov, tc, _, _ = env
+    for _ in range(1000):
+        _, req = start(prov)
+    assert prov._exec("SELECT COUNT(*) FROM pending")[0][0] <= 100
+    assert tc.post("/login", data={"req": req, "secret": SECRET}).status_code == 302
+
+
+# ---- login: per-network limits, consent, audit -------------------------------------------------
+
+
+def test_ipv6_clients_are_limited_per_64_prefix(env):
+    """One IPv6 /64 is one subscriber; limiting single addresses lets them rotate forever."""
+    prov, _, _, limiter = env
+    handler = make_login_handler(prov, OwnerAuthenticator(hash_secret(SECRET)), limiter, lambda r: r.headers["x-test-ip"])
+    tc = TestClient(Starlette(routes=[Route("/login", handler, methods=["GET", "POST"])]), follow_redirects=False)
+    _, req = start(prov)
+    for i in range(5):
+        r = tc.post("/login", data={"req": req, "secret": "nope"}, headers={"x-test-ip": f"2001:db8:1:2::{i + 1:x}"})
+        assert r.status_code == 401
+    same_64 = tc.post("/login", data={"req": req, "secret": "nope"}, headers={"x-test-ip": "2001:db8:1:2:ffff::9"})
+    other_64 = tc.post("/login", data={"req": req, "secret": "nope"}, headers={"x-test-ip": "2001:db8:1:3::1"})
+    assert same_64.status_code == 429
+    assert other_64.status_code == 401
+
+
+def test_login_page_names_the_client_and_its_redirect_host(env):
+    """Anyone can register a client and send the owner a real login link; the page must say who asks."""
+    prov, tc, _, _ = env
+    run(prov.register_client(client(client_id="named", client_name="Evil <b>Corp</b>")))
+    params = AuthorizationParams(state="s", scopes=[], code_challenge="c", redirect_uri=REDIRECT,
+                                 redirect_uri_provided_explicitly=True, resource=None)
+    req = parse_qs(urlparse(run(prov.authorize(run(prov.get_client("named")), params))).query)["req"][0]
+    page = tc.get("/login", params={"req": req}).text
+    assert "Evil &lt;b&gt;Corp&lt;/b&gt;" in page and "<b>Corp</b>" not in page
+    assert "claude.ai" in page
+
+
+def test_failed_logins_are_logged_without_secrets(env, caplog):
+    import logging
+
+    prov, tc, _, _ = env
+    _, req = start(prov)
+    with caplog.at_level(logging.INFO):
+        tc.post("/login", data={"req": req, "secret": "hunter2-guess"})
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING], "a failed login left no warning"
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "testclient" in text  # the client address
+    assert "hunter2-guess" not in text and req not in text
+
+
+# ---- redirect URIs: Claude's callback path, not the whole site -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://claude.ai/public/artifacts/abc",
+        "https://claude.com/some/page",
+        "https://claude.ai/api/mcp/auth_callback/../../x",
+    ],
+)
+def test_default_allowlist_accepts_only_claudes_callback_path(provider, uri):
+    with pytest.raises(RegistrationError):
+        run(provider.register_client(client(redirects=[uri])))
+
+
+def test_allowlist_rule_with_a_path_pins_that_path():
+    path = os.path.join(tempfile.mkdtemp(), "a.sqlite3")
+    p = OwnerProvider(path, server_key=KEY, redirect_allowlist=["https://example.org/oauth/cb"])
+    run(p.register_client(client(redirects=["https://example.org/oauth/cb"])))
+    with pytest.raises(RegistrationError):
+        run(p.register_client(client(client_id="c2", redirects=["https://example.org/elsewhere"])))
+
+
+# ---- files on disk ------------------------------------------------------------------------------
+
+
+def test_auth_database_and_its_directory_are_private():
+    d = os.path.join(tempfile.mkdtemp(), "data")
+    prov = OwnerProvider(os.path.join(d, "auth.sqlite3"), server_key=KEY)
+    assert os.stat(prov.path).st_mode & 0o077 == 0
+    assert os.stat(d).st_mode & 0o077 == 0

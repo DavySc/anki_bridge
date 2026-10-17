@@ -45,7 +45,7 @@ refuses `ALLOW_INSECURE_NO_AUTH` on anything but a loopback `HOST`.
 | `DATA_DIR` | Per-user data and `auth.sqlite3` | `./data` |
 | `ANKI_COLLECTION` | Owner's collection path | `<DATA_DIR>/owner/collection.anki2` |
 | `ANKIWEB_USER` / `ANKIWEB_PASS` | AnkiWeb login; omit to run without sync | unset |
-| `REDIRECT_ALLOWLIST` | Comma-separated OAuth redirect rules (`scheme://host`; no port = any port, for loopback) | claude.ai, claude.com, loopback |
+| `REDIRECT_ALLOWLIST` | Comma-separated OAuth redirect rules (`scheme://host[/path]`; no port = any port, for loopback; a path allows only that path) | `/api/mcp/auth_callback` on claude.ai and claude.com, loopback |
 | `TRUST_PROXY` | `1` = client IP from the last `X-Forwarded-For` entry (set behind Caddy) | unset |
 
 ## How auth works
@@ -69,9 +69,28 @@ Deliberately not built: user table, signup, per-user AnkiWeb credentials, quotas
 - Untested: real AnkiWeb sync (module `sync-verification`).
 - Untested: the real Claude connector against this server (needs HTTPS, so it
   waits for module `deploy`). Open questions to settle then: does Claude use
-  dynamic client registration, and which exact callback URLs does it use
-  (adjust `REDIRECT_ALLOWLIST`)? If it needs a fixed client, add one
-  pre-registered client from env vars.
+  dynamic client registration, and is its callback still
+  `/api/mcp/auth_callback` (otherwise add it to `REDIRECT_ALLOWLIST`)? If it needs
+  a fixed client, add one pre-registered client from env vars.
+
+## Safeguards worth knowing
+
+- The collection must exist: run `bootstrap.py download` first. The server never
+  creates an empty one (its reads would report "no duplicates"); tools say so instead.
+- A call that waits more than 3 s for another one (usually an AnkiWeb sync; a stalled
+  AnkiWeb request takes ~31 s to fail) answers "busy, try again" (`LOCK_WAIT` in `core.py`).
+- The AnkiWeb login is made once per server process and renewed when AnkiWeb rejects it.
+- Card fields accept text formatting, `http(s)`/`mailto` links and local images only:
+  no scripts, event handlers, remote images or CSS that loads anything. Cards run
+  as HTML with JavaScript on every device.
+- Notes are checked for shape before any sync; nothing is coerced or dropped.
+  `update_note` refuses an edit that empties the first field, duplicates another
+  note or removes every cloze, and a batch of `add_notes` is stored in one operation.
+- `find_notes` returns `{total, notes}`, so a duplicate check can tell it saw only part.
+- Anonymous OAuth endpoints are bounded: 10 client registrations per IP (IPv6: per /64)
+  per hour, at most 100 clients (idle ones evicted, never ones with tokens), 8 KB of
+  metadata and 10 redirect URIs per client, 10 parked logins per client. The login
+  page names the client and where it redirects; failed logins are logged with the client IP.
 - Not built: systemd unit, Caddy block (module `deploy`).
 
 Note: this uses mcp 2.x (`MCPServer`), not the 1.x `FastMCP`. It hides the text

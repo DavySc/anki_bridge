@@ -19,6 +19,7 @@ direction = sys.argv[1] if len(sys.argv) > 1 else ""
 if direction not in ("download", "upload"):
     sys.exit("usage: bootstrap.py download|upload")
 
+os.umask(0o077)  # the collection is private, like everything the server writes
 os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
 col = Collection(path)
 auth = col.sync_login(

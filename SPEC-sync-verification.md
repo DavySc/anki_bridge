@@ -88,6 +88,17 @@ play "server side" and "phone" (device B) so conflicts are real.
   the ids were lost. Now the call returns normally with `sync_after = "failed: ..."`.
 - **Writes say "Nothing was written."** on a failed pre-sync, but the full-sync message
   itself no longer claims it (it is also used after a write).
+- **Silent drop measured (review, 2026-10-17).** A server that accepts and never answers is
+  testable offline (a socket that never replies): each AnkiWeb request gives up after ~31 s,
+  holding the collection. Other calls now wait at most `LOCK_WAIT` (3 s) and answer "busy".
+- **G4 addressed.** The login key is cached per `Bridge` and renewed once when AnkiWeb
+  rejects it (the local server answers a stale key like a wrong password, `kind=AUTH`).
+- **G7 (new): a write in the same millisecond as the sync before it was not sent.** Anki
+  skips a sync when the collection's `mod` equals the server's (set at the last sync). A
+  write right after the pre-sync can land in that millisecond; the post-sync then reported
+  "synced" without sending it (1 in ~6 round trips once logins stopped taking 300 ms). Fixed
+  by moving `col.mod` past the last sync when notes or cards are unsent. A clock behind
+  AnkiWeb's is not affected: only equality skips.
 
 ## Required behaviour (what the tests assert)
 
@@ -178,7 +189,6 @@ Decided:
 2. A failed post-write sync returns success with `sync_after: "failed: ...; run sync"`
    (approved).
 
-Still open (decided only if evidence demands it):
-3. Cache the sync host key in memory if first real use shows login rate limits.
-4. A timeout on sync calls, if a hung AnkiWeb call proves to block the tool call. Only
-   the refused-connection case is measurable offline.
+3. The sync host key is cached in memory (decided in review, before first real use).
+4. No timeout on the sync itself (Anki gives up after ~31 s per request); instead other
+   calls wait at most 3 s for the collection and answer "busy".

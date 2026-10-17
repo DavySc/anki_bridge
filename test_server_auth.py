@@ -8,6 +8,7 @@ import tempfile
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from anki.collection import Collection
 from starlette.testclient import TestClient
 
 import server
@@ -140,9 +141,24 @@ def oauth_login(tc, secret=SECRET, client_id=None, client_secret=None, verifier=
     return t, client_id, client_secret
 
 
+def seed_collection(cfg, subject=OWNER_SUBJECT, deck="Physics", notes=0):
+    """A subject's collection as bootstrap.py would leave it, with `notes` Basic notes in `deck`.
+    The server never creates one itself."""
+    path = Bridges(cfg).collection_path(subject)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    col = Collection(path)
+    did = col.decks.id(deck)
+    for i in range(notes):
+        note = col.new_note(col.models.by_name("Basic"))
+        note["Front"], note["Back"] = f"question {i}", "answer"
+        col.add_note(note, did)
+    col.close()
+
+
 @pytest.fixture()
 def served():
     cfg = load_config(env())
+    seed_collection(cfg)
     app, prov = make_app(cfg)
     with TestClient(app, base_url=PUBLIC) as tc:
         yield tc, cfg, prov
@@ -311,6 +327,7 @@ def test_other_subject_token_reaches_other_bridge(monkeypatch):
             return "other" if c.get("secret") == "other-pw" else None
 
     cfg = load_config(env())
+    seed_collection(cfg, subject="other", deck="Only in other")
     mcp, _ = build_server(cfg, authenticator=Other())
     app = mcp.streamable_http_app(streamable_http_path="/mcp", stateless_http=True, json_response=True,
                                   transport_security=transport_security(cfg))
@@ -320,10 +337,17 @@ def test_other_subject_token_reaches_other_bridge(monkeypatch):
     with TestClient(app, base_url=PUBLIC) as tc:
         t, _, _ = oauth_login(tc, secret="other-pw")
         assert t.status_code == 200, t.text
-        tool(tc, "list_decks", token=t.json()["access_token"])
+        res = tool(tc, "list_decks", token=t.json()["access_token"])
         assert oauth_login(tc, secret=SECRET)[0].status_code == 401  # the owner secret is not 'other'
     assert seen == ["other"]
-    assert os.path.exists(os.path.join(cfg.data_dir, "other", "collection.anki2"))
+    assert "Only in other" in json.dumps(res["content"])
+
+
+def test_startup_warns_when_the_owner_collection_is_missing():
+    cfg = load_config(env())
+    assert any("bootstrap.py download" in w for w in server.startup_warnings(cfg))
+    seed_collection(cfg)
+    assert server.startup_warnings(cfg) == []
 
 
 # ---- no-auth dev mode ----------------------------------------------------------------------
@@ -331,6 +355,7 @@ def test_other_subject_token_reaches_other_bridge(monkeypatch):
 
 def test_insecure_dev_mode_serves_tools_for_the_owner_without_a_token():
     cfg = load_config({"ALLOW_INSECURE_NO_AUTH": "1", "DATA_DIR": tempfile.mkdtemp()})
+    seed_collection(cfg)
     app, prov = make_app(cfg)
     assert prov is None
     with TestClient(app, base_url="http://127.0.0.1:8000") as tc:
@@ -367,3 +392,152 @@ def test_missing_subject_fails_closed_under_auth(served, monkeypatch, subject):
     monkeypatch.setattr(server, "get_access_token", lambda: None if subject is None else AccessToken(token="x", client_id="c", scopes=[], subject=subject))
     res = tool(tc, "list_decks", token=t.json()["access_token"])
     assert res["isError"] and "Not authenticated" in json.dumps(res["content"])
+
+
+# ---- helpers for the review tests ------------------------------------------------------------
+
+
+def text_of(result):
+    return " ".join(c.get("text", "") for c in result["content"])
+
+
+def tools_by_name(tc, token):
+    r = rpc(tc, "tools/list", token=token)
+    assert r.status_code == 200, r.text
+    return {t["name"]: t for t in r.json()["result"]["tools"]}
+
+
+# ---- anonymous registration ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"client_name": "A" * 10_000},
+        {"redirect_uris": [f"http://127.0.0.1:{p}/cb" for p in range(1000, 1100)]},
+        {"contacts": ["someone@example.org"] * 1000},
+    ],
+    ids=["huge-name", "100-redirect-uris", "1000-contacts"],
+)
+def test_oversized_client_registration_is_refused(served, extra):
+    tc, _, prov = served
+    body = {"redirect_uris": [REDIRECT], "token_endpoint_auth_method": "client_secret_post",
+            "grant_types": ["authorization_code"], "response_types": ["code"], **extra}
+    r = tc.post("/register", json=body)
+    assert r.status_code == 400
+    assert prov._exec("SELECT COUNT(*) FROM clients")[0][0] == 0
+
+
+def test_client_registration_is_rate_limited_per_ip(served):
+    tc, _, _ = served
+    body = {"redirect_uris": [REDIRECT], "token_endpoint_auth_method": "client_secret_post",
+            "grant_types": ["authorization_code"], "response_types": ["code"]}
+    statuses = [tc.post("/register", json=body).status_code for _ in range(100)]
+    assert statuses.count(201) < 100
+    assert set(statuses) <= {201, 400, 429}
+
+
+# ---- what Claude sees ------------------------------------------------------------------------
+
+
+def test_add_notes_schema_describes_each_note(served):
+    """Today each note is {"type": "object", "additionalProperties": true}: Claude has to guess."""
+    tc, cfg, _ = served
+    t, _, _ = oauth_login(tc)
+    schema = tools_by_name(tc, t.json()["access_token"])["add_notes"]["inputSchema"]
+    item = schema["properties"]["notes"]["items"]
+    if "$ref" in item:
+        item = schema["$defs"][item["$ref"].rsplit("/", 1)[-1]]
+    assert {"deck", "note_type", "fields", "tags"} <= set(item.get("properties", {}))
+    assert {"deck", "note_type", "fields"} <= set(item.get("required", []))
+    assert item.get("additionalProperties") is False
+
+
+def test_read_tools_are_annotated_read_only(served):
+    """Lets the Claude connector allow reads automatically and ask before writes."""
+    tc, _, _ = served
+    t, _, _ = oauth_login(tc)
+    tools = tools_by_name(tc, t.json()["access_token"])
+    for name in ("list_decks", "list_note_types", "find_notes"):
+        assert (tools[name].get("annotations") or {}).get("readOnlyHint") is True, name
+    for name in ("add_notes", "update_note", "sync"):
+        assert (tools[name].get("annotations") or {}).get("readOnlyHint") is False, name
+
+
+def test_invalid_search_reaches_the_model_readably(served):
+    tc, _, _ = served
+    t, _, _ = oauth_login(tc)
+    res = tool(tc, "find_notes", {"query": 'deck:"unclosed'}, t.json()["access_token"])
+    assert res["isError"] and "quote" in text_of(res)
+
+
+def test_malformed_note_reaches_the_model_readably(served):
+    tc, _, _ = served
+    t, _, _ = oauth_login(tc)
+    note = {"deck": "Physics", "note_type": "Basic", "fields": "Front: q, Back: a"}
+    res = tool(tc, "add_notes", {"notes": [note], "approved_by_user": True}, t.json()["access_token"])
+    assert res["isError"] and "fields" in text_of(res)
+
+
+def test_find_notes_tells_claude_how_many_matched(served):
+    """With limit=5 and 30 matches, Claude must be able to tell the duplicate check saw only part."""
+    tc, cfg, _ = served
+    seed_collection(cfg, notes=30)
+    t, _, _ = oauth_login(tc)
+    res = tool(tc, "find_notes", {"query": "deck:Physics", "limit": 5}, t.json()["access_token"])
+    assert not res.get("isError"), res
+
+    def ints(value):
+        if isinstance(value, bool):
+            return
+        if isinstance(value, int):
+            yield value
+        elif isinstance(value, dict):
+            for v in value.values():
+                yield from ints(v)
+        elif isinstance(value, list):
+            for v in value:
+                yield from ints(v)
+
+    payload = [json.loads(c["text"]) for c in res["content"]] + [res.get("structuredContent")]
+    assert 30 in set(ints(payload))
+
+
+# ---- concurrency ------------------------------------------------------------------------------------
+
+
+def test_simultaneous_first_calls_share_one_bridge():
+    """Tools run in worker threads; two Bridges on one collection fail with "Anki already open"."""
+    import threading
+
+    for _ in range(20):
+        bridges = Bridges(Config(data_dir=tempfile.mkdtemp()))
+        barrier = threading.Barrier(8)
+        got = []
+
+        def first_call():
+            barrier.wait()
+            got.append(bridges.for_subject(OWNER_SUBJECT))
+
+        threads = [threading.Thread(target=first_call) for _ in range(8)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        assert len({id(b) for b in got}) == 1
+
+
+# ---- configuration ------------------------------------------------------------------------------------
+
+
+def test_load_config_reads_everything_from_the_given_env(monkeypatch):
+    for name in ("ANKIWEB_USER", "ANKIWEB_PASS", "ANKIWEB_ENDPOINT", "REDIRECT_ALLOWLIST"):
+        monkeypatch.delenv(name, raising=False)
+    cfg = load_config(env(ANKIWEB_USER="me", ANKIWEB_PASS="pw", REDIRECT_ALLOWLIST="https://a.example"))
+    assert cfg.sync is not None and cfg.sync.username == "me"
+    assert cfg.redirect_allowlist == ["https://a.example"]
+
+
+def test_non_numeric_port_is_a_config_error():
+    with pytest.raises(ConfigError):
+        load_config(env(PORT="eighty"))
