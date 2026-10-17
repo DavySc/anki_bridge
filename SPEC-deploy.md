@@ -48,9 +48,9 @@ multi-user, a second host, a self-hosted sync server.
 - **systemd unit** `anki-bridge.service`: `User=anki`, `EnvironmentFile=…/env`,
   `Restart=on-failure`, `WorkingDirectory=…/app`, hardening (`NoNewPrivileges`,
   `ProtectSystem=strict` with `ReadWritePaths` for `data/`, `PrivateTmp`,
-  `ProtectHome`). Binds `127.0.0.1:8000` only.
+  `ProtectHome`). Binds `127.0.0.1:8765` only.
 - **nginx server block** for `anki.panzeilkamp.com` (`deploy/nginx-anki.conf`, enabled by symlink
-  into sites-enabled): TLS, then `proxy_pass http://127.0.0.1:8000` with `Host $host` (the
+  into sites-enabled): TLS, then `proxy_pass http://127.0.0.1:8765` with `Host $host` (the
   server checks the Host header), `X-Forwarded-For $proxy_add_x_forwarded_for` (appends the
   real client last, which is the entry `TRUST_PROXY=1` reads), HTTP/1.1, `proxy_buffering off`
   and a long `proxy_read_timeout`, because MCP streamable HTTP can hold responses open.
@@ -58,14 +58,14 @@ multi-user, a second host, a self-hosted sync server.
   (see Open Questions).
 - **Env file** (template in `deploy/env.example`, no real values): `PUBLIC_URL`,
   `OWNER_SECRET_HASH`, `DATA_DIR`, `ANKIWEB_USER`, `ANKIWEB_PASS`, `TRUST_PROXY=1`,
-  `HOST=127.0.0.1`, `PORT=8000`. `ALLOW_INSECURE_NO_AUTH` must be absent.
+  `HOST=127.0.0.1`, `PORT=8765`. `ALLOW_INSECURE_NO_AUTH` must be absent.
 - **One-time bootstrap**: as user `anki`, `bootstrap.py download`, after the Anki
   desktop backup and sync described in README "First real use".
 - **Update procedure**: `git pull`, `systemctl restart anki-bridge`, run the check script.
   A changed `OWNER_SECRET_HASH` makes Claude re-register, which is expected.
 - **Check script** `deploy/check.sh <url>`: unauthenticated `POST /mcp` returns 401 with
   a `WWW-Authenticate` header; both `/.well-known/` documents are served and name the
-  public URL; port 8000 is not reachable from outside. Used after every deploy.
+  public URL; port 8765 is not reachable from outside. Used after every deploy.
 
 ## Commands
 
@@ -101,7 +101,7 @@ Little application logic, so most checks are runtime, run by me on the VPS:
 - Real connector (the open questions from SPEC-auth): add the URL in Claude, confirm
   dynamic client registration works and the callback URL is accepted, log in, call
   `list_decks`, then do the README "First real use" checklist including the phone.
-- Negative, from outside the VPS: `curl http://49.12.74.253:8000` fails; the Host header
+- Negative, from outside the VPS: `curl http://49.12.74.253:8765` fails; the Host header
   of another name gets rejected.
 
 ## Boundaries
@@ -119,7 +119,7 @@ Little application logic, so most checks are runtime, run by me on the VPS:
 
 - [ ] `https://anki.panzeilkamp.com` has a valid certificate; `check.sh` passes.
 - [ ] Service is enabled, runs as `anki`, restarts after a crash, and is back after a reboot.
-- [ ] Port 8000 is unreachable from outside; the existing site on `panzeilkamp.com` still works.
+- [ ] Port 8765 is unreachable from outside; the existing site on `panzeilkamp.com` still works.
 - [ ] Claude's connector completes registration and login; `list_decks` returns my decks.
 - [ ] One approved `add_notes` appears on the phone after sync; `sync` reports `synced`.
 - [ ] No secret in the repo or `ps` output; env file is 0600 and owned by `anki`.
@@ -132,10 +132,22 @@ Little application logic, so most checks are runtime, run by me on the VPS:
 - Keep the apt-installed nix if `nix develop` works there; otherwise switch installers.
 - `anki` record is DNS only.
 
+- **Port 8765, not 8000.** The existing site (`boatsched`, `panzeilkamp.com`) already proxies
+  to `127.0.0.1:8000`; using 8000 would collide. The server's default stays 8000, the env file sets `PORT`.
+- **Certificates: certbot with the nginx plugin**, as for the existing site
+  (`/etc/letsencrypt/live/panzeilkamp.com`, renewal already managed). Order: install the
+  port-80 `server_name anki.panzeilkamp.com` block first (so the HTTP challenge is answered),
+  then `certbot --nginx -d anki.panzeilkamp.com`, which adds the TLS lines and the
+  80-to-443 redirect for this name only. The existing `panzeilkamp.com` blocks are not edited.
+- **No `default_server`** on the existing blocks, so a new block matches by `server_name` and
+  existing behaviour for other names does not change. `nginx -t` runs before every reload;
+  a reload (not restart) keeps the other site up.
+- The existing site's config is the model for proxy headers (it already sets `Host`,
+  `X-Forwarded-For`, `X-Forwarded-Proto`); mine adds `proxy_buffering off` and drops the
+  WebSocket upgrade lines, which this app does not use.
+
 ## Open Questions
 
-1. How are TLS certificates issued for the existing site (certbot, acme.sh, a Cloudflare
-   origin certificate)? I will reuse that for `anki.panzeilkamp.com`. Run on the VPS:
-   `nginx -v`, `ls /etc/nginx/sites-enabled /etc/nginx/conf.d`, `certbot certificates`.
-2. Are the existing server blocks `default_server` on 443? If so, the new block needs its own
-   `server_name` match so the other site is not affected. The same listing answers this.
+None blocking. Remaining to confirm while running the runbook: that `certbot --nginx` is
+installed (`certbot --version`), and that `nix develop` works as user `anki` (nix daemon
+and flakes, see "What is already known").
