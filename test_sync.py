@@ -613,3 +613,17 @@ def test_a_failed_bootstrap_download_leaves_no_collection_behind(account, bridge
     done = run_bootstrap(wrong, "download", path)
     assert done.returncode != 0
     assert os.listdir(os.path.dirname(path)) == []  # no empty collection for the server to mistake for real
+
+
+def test_the_server_named_by_ankiweb_is_remembered_for_later_syncs(account, bridge, monkeypatch):
+    """AnkiWeb's first answer names the server that holds the account (new_endpoint); real
+    AnkiWeb does this, the local server never does, so the answer is faked at the one call."""
+    from anki.sync_pb2 import SyncCollectionResponse
+
+    bridge.sync()  # logs in, so there is an auth to update
+    fake = SyncCollectionResponse(
+        required=SyncCollectionResponse.ChangesRequired.NO_CHANGES, new_endpoint="https://sync99.example/"
+    )
+    monkeypatch.setattr(bridge, "_sync_collection", lambda col: fake)
+    bridge.sync()
+    assert bridge._auth.endpoint == "https://sync99.example/"

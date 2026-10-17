@@ -120,10 +120,12 @@ play "server side" and "phone" (device B) so conflicts are real.
   about 0.4 s of password hashing, which now dominates the sync tests.
 - **First real AnkiWeb use failed (2026-10-17): `HttpError 400 "missing original size"`** on
   `bootstrap.py download`, from both the VPS and a laptop, so not network-specific. The local
-  server cannot show this. Hypothesis, to be confirmed by the next real run: AnkiWeb answers a
+  server cannot show this. **Confirmed by a real run:** AnkiWeb answers a
   normal sync call with `new_endpoint` (the server holding the account) and the full transfer
   must use it, as Anki's own client does. `bootstrap.py` now makes that sync call first, applies
   `new_endpoint`, refuses a download over an existing file, and downloads to a temporary file.
+  The retry printed `AnkiWeb says: FULL_DOWNLOAD (using the server it named)` and downloaded. `core.py`
+  also remembers `new_endpoint` on its cached login after each sync.
 
 ## Required behaviour (what the tests assert)
 

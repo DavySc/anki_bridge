@@ -166,6 +166,8 @@ class Bridge:
             out = self._sync_collection(col)
         except (SyncError, NetworkError) as e:
             raise self._explain(e) from e
+        if out.new_endpoint and self._auth is not None:
+            self._auth.endpoint = out.new_endpoint  # AnkiWeb names the server holding the account
         req = out.required
         R = SyncCollectionResponse.ChangesRequired
         # `required` says whether a full sync is needed, not whether anything moved: a completed
