@@ -36,9 +36,13 @@ def _up(url: str) -> bool:
     return True
 
 
+DEAD = "http://127.0.0.1:9/"  # nothing listens here: stands in for a server that went away
+
+
 class Server:
-    """Anki's sync server on localhost, one user. Started per test (about 0.7 s: it hashes the
-    password at startup), so every test has an empty account and can stop the server."""
+    """Anki's sync server on localhost, one user, shared by the whole session (it takes about
+    0.7 s to start: it hashes the password). Tests share one account, so each begins with
+    Account.seed(), which replaces what the server holds, or does not depend on its contents."""
 
     USER, PASSWORD = "user", "pass"
 
@@ -75,7 +79,7 @@ class Server:
         self.log.close()
 
 
-@pytest.fixture()
+@pytest.fixture(scope="session")
 def server():
     s = Server()
     try:
@@ -211,10 +215,9 @@ def test_wrong_password_is_a_readable_error_without_the_password(account):
 
 def test_unreachable_server_is_a_readable_error(account):
     path = account.seed()
-    account.server.stop()
     started = time.time()
     with pytest.raises(BridgeError) as e:
-        Bridge(path, account.config()).sync()
+        Bridge(path, account.config(endpoint=DEAD)).sync()
     assert "could not reach ankiweb" in str(e.value).lower()
     print(f"refused connection took {time.time() - started:.2f}s")  # informs the timeout question
     assert time.time() - started < 10
@@ -238,8 +241,7 @@ def test_failing_pre_sync_writes_nothing(account, which, failure):
     if failure == "auth":
         bad = Bridge(path, account.config(password="wrong"))
     else:
-        account.server.stop()
-        bad = Bridge(path, account.config())
+        bad = Bridge(path, account.config(endpoint=DEAD))
     with pytest.raises(BridgeError):
         if which == "add":
             bad.add_notes([basic(front="new one")])
@@ -346,7 +348,7 @@ def test_full_sync_required_after_the_write_is_reported_not_raised(account, brid
 
 def test_malformed_write_fails_before_contacting_ankiweb(account, bridge):
     """With AnkiWeb down, a malformed request must report the malformation, not the network."""
-    account.server.stop()
+    bridge.sync_cfg.endpoint = DEAD
     with pytest.raises(BridgeError) as e:
         bridge.add_notes([basic(tags="claude")])  # tags must be a list
     assert "AnkiWeb" not in str(e.value)
