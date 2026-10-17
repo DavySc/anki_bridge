@@ -50,22 +50,22 @@ the VPS; the plain secret never leaves your head or password manager.
 untouched. Fix hardening problems here, not later.
 
 **Acceptance criteria:**
-- [ ] `systemctl enable --now anki-bridge` active, running as `anki`
-- [ ] `journalctl -u anki-bridge` shows no errors; the missing-collection warning is expected
-- [ ] `curl -si -X POST http://127.0.0.1:8765/mcp` gives 401 with `WWW-Authenticate`
-- [ ] `curl -s -H 'Host: anki.panzeilkamp.com' http://127.0.0.1:8765/.well-known/oauth-authorization-server` names `https://anki.panzeilkamp.com`
-- [ ] `ss -ltn | grep 8765` shows `127.0.0.1` only
+- [x] `systemctl enable --now anki-bridge` active, running as `anki`
+- [x] `journalctl -u anki-bridge` shows no errors; the missing-collection warning is expected
+- [x] `curl -si -X POST http://127.0.0.1:8765/mcp` gives 401 with `WWW-Authenticate`
+- [x] `curl -s -H 'Host: anki.panzeilkamp.com' http://127.0.0.1:8765/.well-known/oauth-authorization-server` names `https://anki.panzeilkamp.com`
+- [x] `ss -ltn | grep 8765` shows `127.0.0.1` only
 
 **Verification:**
-- [ ] Any `ReadWritePaths` or hardening change is committed back to `deploy/anki-bridge.service` (with a test if it affects the port or user)
+- [x] Any `ReadWritePaths` or hardening change is committed back to `deploy/anki-bridge.service` (with a test if it affects the port or user)
 
 **Dependencies:** Task 2
 **Files:** `deploy/anki-bridge.service`, `DEPLOY.md`
 **Scope:** Small
 
 ## Checkpoint: Service runs
-- [ ] Task 3 criteria met; `boatsched` unaffected
-- [ ] Review with human before opening it to the internet
+- [x] Task 3 criteria met; `boatsched` unaffected
+- [x] Review with human before opening it to the internet
 
 ## Task 4: nginx and certificate [you]
 
