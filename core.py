@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator
 
 from anki.collection import Collection
+from anki.errors import NetworkError, SyncError, SyncErrorKind
 from anki.notes import Note
 from anki.sync_pb2 import SyncCollectionResponse
 
@@ -76,8 +77,11 @@ class Bridge:
         if self.sync_cfg is None:
             return "sync not configured"
         cfg = self.sync_cfg
-        auth = col.sync_login(cfg.username, cfg.password, cfg.endpoint)
-        out = col.sync_collection(auth, sync_media=False)
+        try:
+            auth = col.sync_login(cfg.username, cfg.password, cfg.endpoint)
+            out = col.sync_collection(auth, sync_media=False)
+        except (SyncError, NetworkError) as e:
+            raise self._explain(e) from e
         req = out.required
         R = SyncCollectionResponse.ChangesRequired
         # `required` says whether a full sync is needed, not whether anything moved: a completed
@@ -85,9 +89,42 @@ class Bridge:
         if req in (R.NO_CHANGES, R.NORMAL_SYNC):
             return "synced"
         raise SyncRequired(
-            "AnkiWeb requires a full sync (upload or download). Nothing was "
-            "written. Run bootstrap.py by hand and choose the direction."
+            "AnkiWeb requires a full sync (upload or download). It was not done. "
+            "Run bootstrap.py by hand and choose the direction."
         )
+
+    def _explain(self, exc: Exception) -> BridgeError:
+        """A sync failure as a message for Claude. mcp 2.x shows the model only BridgeError text,
+        and the password must never be in it."""
+        if isinstance(exc, SyncError) and exc.kind == SyncErrorKind.AUTH:
+            return BridgeError(
+                "AnkiWeb login failed. Check ANKIWEB_USER and ANKIWEB_PASS on the server."
+            )
+        if isinstance(exc, NetworkError):
+            return BridgeError("Could not reach AnkiWeb (network error).")
+        text = str(exc)
+        if self.sync_cfg and self.sync_cfg.password:
+            text = text.replace(self.sync_cfg.password, "***")
+        return BridgeError(f"AnkiWeb sync failed: {text}")
+
+    def _sync_before_write(self, col: Collection) -> str:
+        """The sync that must succeed before a write. If it fails, nothing has been written."""
+        try:
+            return self._sync(col)
+        except SyncRequired as e:
+            raise SyncRequired(f"{e} Nothing was written.") from e
+        except BridgeError as e:
+            raise BridgeError(f"{e} Nothing was written.") from e
+
+    def _sync_after_write(self, col: Collection) -> str:
+        """The sync after a write. The write is already saved locally, so a failure here must not
+        hide its result: report it in the status instead of raising."""
+        try:
+            return self._sync(col)
+        except SyncRequired as e:
+            return f"failed: {e}"
+        except BridgeError as e:
+            return f"failed: {e} Run sync to retry."
 
     # ---- helpers --------------------------------------------------------
 
@@ -181,7 +218,7 @@ class Bridge:
         if len(items) > MAX_BATCH:
             raise BridgeError(f"At most {MAX_BATCH} notes per call.")
         with self._col() as col:
-            pre = self._sync(col)
+            pre = self._sync_before_write(col)
             staged: list[tuple[Note, int]] = []
             problems: list[str] = []
             seen: set[tuple[str, str]] = set()
@@ -217,7 +254,7 @@ class Bridge:
             for note, did in staged:
                 col.add_note(note, did)
                 ids.append(int(note.id))
-            post = self._sync(col)
+            post = self._sync_after_write(col)
             return {"added": ids, "sync_before": pre, "sync_after": post}
 
     def update_note(
@@ -228,7 +265,7 @@ class Bridge:
         remove_tags: list[str] | None = None,
     ) -> dict[str, Any]:
         with self._col() as col:
-            pre = self._sync(col)
+            pre = self._sync_before_write(col)
             try:
                 note = col.get_note(note_id)  # type: ignore[arg-type]
             except Exception as e:
@@ -243,7 +280,7 @@ class Bridge:
             for t in remove_tags or []:
                 note.remove_tag(t)
             col.update_note(note)
-            post = self._sync(col)
+            post = self._sync_after_write(col)
             return {
                 "note": self._note_view(col, col.get_note(note.id)),
                 "sync_before": pre,

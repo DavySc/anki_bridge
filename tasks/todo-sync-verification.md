@@ -33,15 +33,15 @@ note (required behaviour 5, H1 baseline).
 messages. Prove a failing pre-sync leaves the collection untouched.
 
 **Acceptance criteria:**
-- [ ] Wrong password: "AnkiWeb login failed..." naming the env vars, no password in text
-- [ ] Server down (connection refused): "Could not reach AnkiWeb (network). Nothing was written."
-- [ ] `add_notes` and `update_note` with a failing pre-sync leave note count and modification times unchanged
-- [ ] The message reaches the model through the server wrapper (one test via `surfaced`)
-- [ ] `sync` tool raises the same readable errors
+- [x] Wrong password: "AnkiWeb login failed..." naming the env vars, no password in text
+- [x] Server down (connection refused): "Could not reach AnkiWeb (network). Nothing was written."
+- [x] `add_notes` and `update_note` with a failing pre-sync leave note count and modification times unchanged
+- [x] The message reaches the model through the server wrapper (one test via `surfaced`)
+- [x] `sync` tool raises the same readable errors
 
 **Verification:**
-- [ ] `python -m pytest -q test_sync.py` passes
-- [ ] Time of the refused-connection case noted (informs the timeout question)
+- [x] `python -m pytest -q test_sync.py` passes
+- [x] Time of the refused-connection case noted: 0.01 s. A blackhole (silent drop) is not testable offline
 
 **Dependencies:** Task 1
 **Files:** `core.py`, `test_sync.py`
@@ -54,22 +54,22 @@ normally with ids or the updated note and `sync_after = "failed: <reason>; run s
 Failure injected on the second `_sync` call only (counter wrapper).
 
 **Acceptance criteria:**
-- [ ] `add_notes` returns the added ids with a failed `sync_after`; does not raise
-- [ ] `update_note` returns the note with a failed `sync_after`
-- [ ] A following `sync` call pushes the write; the phone then sees it
-- [ ] Retrying the same `add_notes` is rejected as a duplicate (documented, expected)
-- [ ] A `SyncRequired` after the write is also reported in `sync_after`, not raised
+- [x] `add_notes` returns the added ids with a failed `sync_after`; does not raise
+- [x] `update_note` returns the note with a failed `sync_after`
+- [x] A following `sync` call pushes the write; the phone then sees it
+- [x] Retrying the same `add_notes` is rejected as a duplicate (documented, expected)
+- [x] A `SyncRequired` after the write is also reported in `sync_after`, not raised
 
 **Verification:**
-- [ ] `python -m pytest -q test_sync.py` passes
+- [x] `python -m pytest -q test_sync.py` passes
 
 **Dependencies:** Task 2
 **Files:** `core.py`, `test_sync.py`
 **Scope:** Small
 
 ## Checkpoint: after Tasks 1-3
-- [ ] All tests pass
-- [ ] The data-loss gap (G2) and the unreadable-error gap (G1) are closed
+- [x] All tests pass (128)
+- [x] The data-loss gap (G2) and the unreadable-error gap (G1) are closed
 - [ ] Review with human before the remaining scenarios
 
 ## Task 4: Full-sync refusal names the direction

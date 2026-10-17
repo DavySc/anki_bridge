@@ -74,6 +74,21 @@ play "server side" and "phone" (device B) so conflicts are real.
     bootstrap.py        unchanged unless H4 finds a bug
     README.md           documents the sync tests and the first-real-use checklist
 
+## Findings so far (updated as tasks land)
+
+- **G6 (new, task 1): the old status labels lied.** `sync_collection` returns
+  `required = NO_CHANGES` after every completed normal sync, even when it just pushed
+  notes; `NORMAL_SYNC` never appeared in any scenario. `required` only says whether a
+  *full* sync is needed. A completed sync now reports `"synced"`; `"no changes"` is gone.
+- **G1 confirmed and fixed (task 2).** Bad password raises `SyncError(kind=AUTH)`, a dead
+  or refused server raises `NetworkError`; `SyncErrorKind` only has AUTH and OTHER. All
+  become `BridgeError` text, with the password scrubbed. A refused connection fails in
+  0.01 s; a silently dropped one is untestable offline (timeout question stays open).
+- **G2 confirmed and fixed (task 3).** The write was committed, the post-sync raised, and
+  the ids were lost. Now the call returns normally with `sync_after = "failed: ..."`.
+- **Writes say "Nothing was written."** on a failed pre-sync, but the full-sync message
+  itself no longer claims it (it is also used after a write).
+
 ## Required behaviour (what the tests assert)
 
 1. **Readable sync errors (G1).** Wrong credentials, unreachable server, timeout and
@@ -86,7 +101,7 @@ play "server side" and "phone" (device B) so conflicts are real.
    (note count, usn, modification times).
 3. **Post-sync failure keeps the result (G2).** If the write succeeded and the sync
    after it fails, the call returns normally with the added ids or updated note,
-   `sync_before` as usual, and `sync_after` = `"failed: <reason>; run sync"`. It
+   `sync_before` as usual, and `sync_after` = `"failed: <reason> Run sync to retry."` (for a full-sync requirement: `"failed: <reason>"`, since retrying cannot help). It
    does not raise. A later `sync` tool call pushes the pending write.
 4. **Full sync is refused, never done (G3).** FULL_SYNC, FULL_UPLOAD and FULL_DOWNLOAD
    each raise `SyncRequired` naming the direction Anki asked for. Neither

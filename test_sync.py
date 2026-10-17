@@ -161,3 +161,162 @@ def test_add_and_update_reach_a_second_device(account, bridge):
     assert phone.get_note(nid)["Back"] == "Rayleigh scattering of sunlight"
     assert "checked" in phone.get_note(nid).tags
     phone.close()
+
+
+# ---- readable errors, and a failing pre-sync writes nothing (G1, rule 2) ------------------
+
+from anki.errors import NetworkError, SyncError, SyncErrorKind
+
+from core import Bridge as _Bridge
+
+
+def snapshot(path: str) -> tuple[int, int]:
+    """(note count, collection mod time) read without syncing."""
+    col = Collection(path)
+    try:
+        return len(col.find_notes("")), col.mod
+    finally:
+        col.close()
+
+
+def test_wrong_password_is_a_readable_error_without_the_password(account):
+    path = account.seed()
+    b = Bridge(path, account.config(password="hunter2-wrong"))
+    with pytest.raises(BridgeError) as e:
+        b.sync()
+    msg = str(e.value)
+    assert "login failed" in msg.lower() and "ANKIWEB_USER" in msg and "ANKIWEB_PASS" in msg
+    assert "hunter2-wrong" not in msg
+    assert not isinstance(e.value, SyncRequired)
+
+
+def test_unreachable_server_is_a_readable_error(account):
+    path = account.seed()
+    account.server.stop()
+    started = time.time()
+    with pytest.raises(BridgeError) as e:
+        Bridge(path, account.config()).sync()
+    assert "could not reach ankiweb" in str(e.value).lower()
+    print(f"refused connection took {time.time() - started:.2f}s")  # informs the timeout question
+    assert time.time() - started < 10
+
+
+def test_unparseable_endpoint_is_a_readable_error(account):
+    path = account.seed()
+    with pytest.raises(BridgeError) as e:
+        Bridge(path, account.config(endpoint="http://127.0.0.1:9/")).sync()
+    assert "could not reach ankiweb" in str(e.value).lower()
+
+
+@pytest.mark.parametrize("which", ["add", "update"])
+@pytest.mark.parametrize("failure", ["auth", "network"])
+def test_failing_pre_sync_writes_nothing(account, which, failure):
+    path = account.seed()
+    good = Bridge(path, account.config())
+    nid = good.add_notes([basic(front="existing")])["added"][0]
+    before = snapshot(path)
+
+    if failure == "auth":
+        bad = Bridge(path, account.config(password="wrong"))
+    else:
+        account.server.stop()
+        bad = Bridge(path, account.config())
+    with pytest.raises(BridgeError):
+        if which == "add":
+            bad.add_notes([basic(front="new one")])
+        else:
+            bad.update_note(nid, fields={"Back": "changed"})
+    assert snapshot(path) == before
+
+
+def test_other_sync_errors_pass_their_message_on_and_scrub_the_password():
+    b = Bridge("unused", SyncConfig("me", "s3cret-pw", None))
+    err = SyncError("server said no: s3cret-pw", None, None, None, SyncErrorKind.OTHER)
+    out = b._explain(err)
+    assert isinstance(out, BridgeError) and "server said no" in str(out)
+    assert "s3cret-pw" not in str(out)
+    net = b._explain(NetworkError("boom s3cret-pw", None, None, None))
+    assert "could not reach ankiweb" in str(net).lower() and "s3cret-pw" not in str(net)
+
+
+def test_sync_errors_reach_the_model_through_the_server(account):
+    """mcp 2.x shows only ToolError text; the readable sync error must survive the wrapper."""
+    import json
+
+    from starlette.testclient import TestClient
+
+    import test_server_auth as tsa
+    from server import Config
+
+    path = account.seed()
+    cfg = Config(data_dir=tempfile.mkdtemp(), collection=path, sync=account.config(password="pw-wrong-1234"))
+    app, _ = tsa.make_app(cfg)
+    with TestClient(app, base_url="http://127.0.0.1:8000") as tc:
+        res = tsa.tool(tc, "sync")
+    assert res["isError"]
+    text = json.dumps(res["content"])
+    assert "login failed" in text.lower() and "pw-wrong-1234" not in text
+
+
+# ---- a failing post-write sync keeps the result (G2, rule 3) -------------------------------
+
+
+def fail_second_sync(bridge: Bridge, exc: Exception) -> None:
+    """The pre-write sync runs for real; the sync after the write raises `exc`. Killing the server
+    between the two is not controllable, so this is the one place a test injects a failure."""
+    real, calls = bridge._sync, []
+
+    def wrapper(col):
+        calls.append(1)
+        if len(calls) == 2:
+            raise exc
+        return real(col)
+
+    bridge._sync = wrapper
+    bridge._restore = lambda: setattr(bridge, "_sync", real)
+
+
+def test_add_notes_returns_the_ids_when_the_sync_after_it_fails(account, bridge):
+    phone = account.phone()
+    fail_second_sync(bridge, BridgeError("Could not reach AnkiWeb (network error)."))
+    out = bridge.add_notes([basic(front="kept")])  # does not raise
+    assert len(out["added"]) == 1 and out["sync_before"] == "synced"
+    assert out["sync_after"].startswith("failed:") and "Run sync" in out["sync_after"]
+    account.sync(phone)
+    assert note_texts(phone) == {}  # not on the other device yet
+
+    bridge._restore()
+    assert bridge.sync() == {"result": "synced"}  # the sync tool pushes the pending write
+    account.sync(phone)
+    assert list(note_texts(phone)) == ["kept"]
+    phone.close()
+
+
+def test_update_note_returns_the_note_when_the_sync_after_it_fails(account, bridge):
+    nid = bridge.add_notes([basic(front="orig")])["added"][0]
+    fail_second_sync(bridge, BridgeError("Could not reach AnkiWeb (network error)."))
+    out = bridge.update_note(nid, fields={"Back": "edited"})
+    assert out["note"]["fields"]["Back"] == "edited" and out["sync_after"].startswith("failed:")
+    bridge._restore()
+    bridge.sync()
+    phone = account.phone()
+    assert phone.get_note(nid)["Back"] == "edited"
+    phone.close()
+
+
+def test_retrying_after_a_failed_post_sync_is_rejected_as_a_duplicate(account, bridge):
+    fail_second_sync(bridge, BridgeError("Could not reach AnkiWeb (network error)."))
+    bridge.add_notes([basic(front="once")])
+    bridge._restore()
+    with pytest.raises(BridgeError) as e:
+        bridge.add_notes([basic(front="once")])
+    assert "Nothing was added" in str(e.value) and "duplicate" in str(e.value)
+    assert snapshot(bridge.path)[0] == 1
+
+
+def test_full_sync_required_after_the_write_is_reported_not_raised(account, bridge):
+    fail_second_sync(bridge, SyncRequired("AnkiWeb requires a full sync. It was not done."))
+    out = bridge.add_notes([basic(front="kept")])
+    assert len(out["added"]) == 1
+    assert out["sync_after"].startswith("failed:") and "full sync" in out["sync_after"]
+    assert "Run sync to retry" not in out["sync_after"]  # retrying would not help
