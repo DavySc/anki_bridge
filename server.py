@@ -259,7 +259,7 @@ def sync_config(credential: dict[str, str]) -> SyncConfig:
 
 NO_ANKIWEB_LOGIN = (
     "No AnkiWeb login is unlocked for this connection, so nothing was done. Log in to the bridge again "
-    "(in Claude: disconnect and reconnect the Anki connector) and enter your AnkiWeb login on the login page."
+    "(disconnect and reconnect the Anki connector in the app) and enter your AnkiWeb login on the login page."
 )
 
 
@@ -269,7 +269,7 @@ def transport_security(cfg: Config) -> TransportSecuritySettings:
     if cfg.public_url:
         u = urlparse(cfg.public_url)
         hosts += [u.netloc]
-        origins += [cfg.public_url, "https://claude.ai", "https://claude.com"]
+        origins += [cfg.public_url, "https://claude.ai", "https://claude.com", "https://www.perplexity.ai"]
     return TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins)
 
 

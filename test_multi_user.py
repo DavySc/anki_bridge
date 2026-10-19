@@ -74,13 +74,13 @@ def two(monkeypatch):
 # ---- the owner notices nothing ------------------------------------------------------------
 
 
-OLD_FORM = (
+OLD_FORM = (  # only the last sentence changed since, from "connect Claude to this server" (Perplexity)
     '<p><b>test</b> asks for access to your Anki collection. After you log in, your browser goes to'
-    ' <b>claude.ai</b>. If you did not just connect Claude to this server, close this page.</p>'
+    ' <b>claude.ai</b>. If you did not just connect this app to your Anki bridge, close this page.</p>'
     '<form method="post"><input type="hidden" name="req" value="R">'
     '<input type="password" name="secret" placeholder="Owner secret" autofocus required>'
     "<button>Authorize</button></form>"
-)  # auth._login_form as deployed before multi-user, byte for byte
+)  # auth._login_form for the owner alone, byte for byte
 
 
 def test_without_users_file_the_login_form_is_the_old_one_plus_the_ankiweb_section():

@@ -46,7 +46,7 @@ refuses `ALLOW_INSECURE_NO_AUTH` on anything but a loopback `HOST`.
 | `DATA_DIR` | Per-user data and `auth.sqlite3` | `./data` |
 | `ANKI_COLLECTION` | Owner's collection path | `<DATA_DIR>/owner/collection.anki2` |
 | `ANKIWEB_USER` / `ANKIWEB_PASS` | Owner's AnkiWeb login, in the clear. Optional: without it, enter it on the login page, where it is stored encrypted (see "AnkiWeb logins"). With neither, sync is off | unset |
-| `REDIRECT_ALLOWLIST` | Comma-separated OAuth redirect rules (`scheme://host[/path]`; no port = any port, for loopback; a path allows only that path) | `/api/mcp/auth_callback` on claude.ai and claude.com, loopback |
+| `REDIRECT_ALLOWLIST` | Comma-separated OAuth redirect rules (`scheme://host[/path]`; no port = any port, for loopback; a path allows only that path) | `/api/mcp/auth_callback` on claude.ai and claude.com, Perplexity's `/rest/connections/oauth_callback`, loopback |
 | `TRUST_PROXY` | `1` = client IP from the last `X-Forwarded-For` entry (set behind the reverse proxy) | unset |
 | `USERS_FILE` | TOML file with other people (see "Other people"); mode 600. Unset = owner only | unset |
 
@@ -81,6 +81,14 @@ that person's collection (`data/<name>/collection.anki2`) and saved AnkiWeb logi
 
     python auth.py hash alice           # they type their secret; prints a [users.alice] entry
     # paste it into users.toml (template: deploy/users.example.toml), chmod 600, restart
+
+Someone who is not at your terminal can make the hash on their own computer (Python 3 only),
+so their secret never leaves it, and send you what it prints as their `secret_hash`:
+
+    python3 -c "import base64,getpass,hashlib,os;s=getpass.getpass('Secret: ');salt=os.urandom(16);d=hashlib.scrypt(s.encode(),salt=salt,n=2**15,r=8,p=1,maxmem=2**26,dklen=32);b=lambda x:base64.b64encode(x).decode();print(f'scrypt\$32768\$8\$1\${b(salt)}\${b(d)}')"
+
+Clients: Claude (custom connector) and Perplexity (custom remote connector: Streamable HTTP,
+OAuth 2.0, no client ID needed). Both register themselves and use the same login page.
 
 They then log in as `alice` and enter their AnkiWeb login; that first login downloads their
 collection. The file holds no AnkiWeb logins. The server refuses to start if the file is readable

@@ -90,14 +90,15 @@ def tool(tc, name, args=None, token=None):
     return r.json()["result"]
 
 
-def oauth_login(tc, secret=SECRET, client_id=None, client_secret=None, verifier="v" * 50, username=None, extra=None):
+def oauth_login(tc, secret=SECRET, client_id=None, client_secret=None, verifier="v" * 50, username=None, extra=None,
+                redirect=REDIRECT):
     """register -> authorize -> login -> token. Returns (token_json, client_id, client_secret).
     username None posts the owner-only form (no username field); extra adds form fields."""
     if client_id is None:
         reg = tc.post(
             "/register",
             json={
-                "redirect_uris": [REDIRECT],
+                "redirect_uris": [redirect],
                 "token_endpoint_auth_method": "client_secret_post",
                 "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],
@@ -112,7 +113,7 @@ def oauth_login(tc, secret=SECRET, client_id=None, client_secret=None, verifier=
         params={
             "response_type": "code",
             "client_id": client_id,
-            "redirect_uri": REDIRECT,
+            "redirect_uri": redirect,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
             "state": "st",
@@ -135,7 +136,7 @@ def oauth_login(tc, secret=SECRET, client_id=None, client_secret=None, verifier=
         data={
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": REDIRECT,
+            "redirect_uri": redirect,
             "client_id": client_id,
             "client_secret": client_secret,
             "code_verifier": verifier,
@@ -264,6 +265,18 @@ def test_token_for_another_resource_is_refused(served):
                                      "code_challenge": "x" * 43, "code_challenge_method": "S256",
                                      "resource": "https://evil.example/mcp"}, follow_redirects=False)
     assert a.status_code == 302 and "error=invalid_target" in a.headers["location"]
+
+
+def test_a_perplexity_connector_registers_logs_in_and_calls_tools(served):
+    """Perplexity's custom connectors use their own callback and may send its Origin."""
+    tc, _, _ = served
+    t, _, _ = oauth_login(tc, redirect="https://www.perplexity.ai/rest/connections/oauth_callback")
+    assert t.status_code == 200, t.text
+    h = {**HEADERS, "authorization": f"Bearer {t.json()['access_token']}", "origin": "https://www.perplexity.ai"}
+    r = tc.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=h)
+    assert r.status_code == 200, r.text
+    h["origin"] = "https://evil.example"
+    assert tc.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=h).status_code == 403
 
 
 def test_dcr_rejects_foreign_redirect_uris(served):

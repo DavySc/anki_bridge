@@ -66,6 +66,7 @@ USERNAME_OK = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 DEFAULT_REDIRECT_ALLOWLIST = [
     "https://claude.ai/api/mcp/auth_callback",
     "https://claude.com/api/mcp/auth_callback",
+    "https://www.perplexity.ai/rest/connections/oauth_callback",  # Perplexity custom connectors
     "http://127.0.0.1",
     "http://localhost",
     "http://[::1]",
@@ -798,7 +799,7 @@ def _login_form(
         (f"<p class=e>{error}</p>" if error else "")
         + f"<p><b>{html.escape(name[:100])}</b> asks for access to your Anki collection. After you"
         f" log in, your browser goes to <b>{html.escape(host)}</b>. If you did not just connect"
-        " Claude to this server, close this page.</p>"
+        " this app to your Anki bridge, close this page.</p>"
         f'<form method="post"><input type="hidden" name="req" value="{html.escape(req_id)}">'
         + fields
         + ("" if ankiweb is None else _ANKIWEB_FIELDS.format(open=" open" if ankiweb else ""))

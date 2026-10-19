@@ -120,6 +120,7 @@ works.
 As `anki`, in `/srv/anki-bridge/app`:
 
     nix develop --command python auth.py hash alice     # they type their secret; prints [users.alice] ...
+    # or they run the python3 one-liner from the README on their own computer and send you the hash
     cp deploy/users.example.toml /srv/anki-bridge/users.toml
     chmod 600 /srv/anki-bridge/users.toml
     nano /srv/anki-bridge/users.toml                    # paste the entry (no AnkiWeb login goes here)
@@ -131,8 +132,10 @@ Then, as root:
     journalctl -u anki-bridge -n 30 --no-pager          # no "Refusing to start"
     deploy/check.sh https://anki.panzeilkamp.com
 
-They add `https://anki.panzeilkamp.com/mcp` as a connector in their own Claude, log in with
-username `alice`, open "AnkiWeb login" and enter theirs. That login downloads their collection
+They add `https://anki.panzeilkamp.com/mcp` as a connector in their own Claude (custom connector)
+or Perplexity (Plugins or Customize, Connectors: Add custom, Connector, Add MCP connector, Remote;
+Streamable HTTP, OAuth 2.0, no client ID), log in with username `alice`, open "AnkiWeb login" and
+enter theirs. That login downloads their collection
 (it can take a minute for a big one); the journal says `downloading the collection of alice`.
 Your login page now has a username field: leave it empty.
 

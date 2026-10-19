@@ -171,6 +171,13 @@ pytest, no network. Drive the provider and the Starlette app in-process
   Claude's server-side calls come from `160.79.106.x`; the browser step comes from the user's IP.
 - No pre-registered client and no allowlist change were needed.
 
+## Perplexity (2026-10-19)
+
+Perplexity's custom remote connectors use the same flow (dynamic registration, OAuth 2.0) with
+the callback `https://www.perplexity.ai/rest/connections/oauth_callback` (their help center),
+now in the default allowlist (that path only), and `https://www.perplexity.ai` is an allowed
+Origin. Checked in tests only; not yet with a real Perplexity connector.
+
 ## Open Questions
 
 1. Does the Claude custom-connector flow (especially the phone app) accept

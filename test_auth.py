@@ -102,6 +102,7 @@ def test_registration_without_redirect_uris_rejected(provider, redirects):
     [
         "https://claude.ai/api/mcp/auth_callback",
         "https://claude.com/api/mcp/auth_callback",
+        "https://www.perplexity.ai/rest/connections/oauth_callback",
         "http://127.0.0.1:6274/oauth/callback",
         "http://localhost:3000/cb",
         "http://[::1]:5000/cb",
@@ -668,9 +669,12 @@ def test_failed_logins_are_logged_without_secrets(env, caplog):
         "https://claude.ai/public/artifacts/abc",
         "https://claude.com/some/page",
         "https://claude.ai/api/mcp/auth_callback/../../x",
+        "https://www.perplexity.ai/search/abc",
+        "https://perplexity.ai/rest/connections/oauth_callback",  # only the www host Perplexity uses
+        "http://www.perplexity.ai/rest/connections/oauth_callback",
     ],
 )
-def test_default_allowlist_accepts_only_claudes_callback_path(provider, uri):
+def test_default_allowlist_accepts_only_the_callback_paths(provider, uri):
     with pytest.raises(RegistrationError):
         run(provider.register_client(client(redirects=[uri])))
 
