@@ -178,6 +178,11 @@ the callback `https://www.perplexity.ai/rest/connections/oauth_callback` (their 
 now in the default allowlist (that path only), and `https://www.perplexity.ai` is an allowed
 Origin. Checked in tests only; not yet with a real Perplexity connector.
 
+Update: a real Perplexity connector redirects to
+`https://www.perplexity.com/rest/connections/oauth_callback`, not the `.ai` host their help
+center names, so registration was refused. Both hosts are now allowed (callback path only),
+and both are allowed Origins.
+
 ## Open Questions
 
 1. Does the Claude custom-connector flow (especially the phone app) accept

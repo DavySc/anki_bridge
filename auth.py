@@ -66,7 +66,8 @@ USERNAME_OK = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 DEFAULT_REDIRECT_ALLOWLIST = [
     "https://claude.ai/api/mcp/auth_callback",
     "https://claude.com/api/mcp/auth_callback",
-    "https://www.perplexity.ai/rest/connections/oauth_callback",  # Perplexity custom connectors
+    "https://www.perplexity.ai/rest/connections/oauth_callback",  # Perplexity custom connectors (their docs)
+    "https://www.perplexity.com/rest/connections/oauth_callback",  # what Perplexity actually sends
     "http://127.0.0.1",
     "http://localhost",
     "http://[::1]",

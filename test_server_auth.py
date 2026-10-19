@@ -267,12 +267,14 @@ def test_token_for_another_resource_is_refused(served):
     assert a.status_code == 302 and "error=invalid_target" in a.headers["location"]
 
 
-def test_a_perplexity_connector_registers_logs_in_and_calls_tools(served):
-    """Perplexity's custom connectors use their own callback and may send its Origin."""
+@pytest.mark.parametrize("site", ["https://www.perplexity.ai", "https://www.perplexity.com"])
+def test_a_perplexity_connector_registers_logs_in_and_calls_tools(served, site):
+    """Perplexity's custom connectors use their own callback and may send its Origin.
+    Their docs say .ai; a real connector redirects to .com."""
     tc, _, _ = served
-    t, _, _ = oauth_login(tc, redirect="https://www.perplexity.ai/rest/connections/oauth_callback")
+    t, _, _ = oauth_login(tc, redirect=f"{site}/rest/connections/oauth_callback")
     assert t.status_code == 200, t.text
-    h = {**HEADERS, "authorization": f"Bearer {t.json()['access_token']}", "origin": "https://www.perplexity.ai"}
+    h = {**HEADERS, "authorization": f"Bearer {t.json()['access_token']}", "origin": site}
     r = tc.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=h)
     assert r.status_code == 200, r.text
     h["origin"] = "https://evil.example"
