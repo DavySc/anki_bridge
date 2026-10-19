@@ -57,7 +57,8 @@ beyond one login form. Multi-user is not built, but the design keeps it cheap
 
 ## Multi-user seams
 
-Built now, because they are nearly free; the rest of multi-user is not built.
+Built now, because they are nearly free. Multi-user itself was built on them later:
+[SPEC-multi-user.md](SPEC-multi-user.md).
 
 - `subject` is stored on pending requests, codes, access and refresh tokens, and
   returned in the SDK's `subject` field. Constant `owner` today.

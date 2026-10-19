@@ -1,7 +1,7 @@
 # anki-claude-bridge: goals
 
-Personal tool, one user today. Built so that adding users later is a contained
-change (see "Multi-user readiness"). Turn insights from Claude conversations (mainly on
+Personal tool for me, and a few people I add by hand (see "Multi-user readiness",
+[SPEC-multi-user.md](SPEC-multi-user.md)). Turn insights from Claude conversations (mainly on
 the phone) into well-formed notes in my existing Anki decks.
 
 ## Goal
@@ -25,6 +25,8 @@ and reach AnkiDroid / AnkiMobile via AnkiWeb.
 - Delete notes. Tag them `to-review` instead.
 - Write anything without my explicit approval in that conversation.
 - Run a full sync automatically. A full sync overwrites one side, so it needs me.
+  One exception that overwrites nothing: when a person saves their AnkiWeb login on the
+  login page and has no collection on the server yet, theirs is downloaded into the empty place.
 - Guess field names or silently drop fields. Reject and report instead.
 
 ## Proposal flow
@@ -39,32 +41,34 @@ Only then is `add_notes` called. There is no server-side pending queue.
 
 ## Multi-user readiness
 
-Only one user is supported and built. These rules keep a later per-user
-expansion cheap, and cost almost nothing now:
+Built: other people listed in a users file (`USERS_FILE`), each with their own
+login, collection and AnkiWeb account. Without the file, nothing differs from the
+single-user server. The rules that made this a contained change still hold:
 
-- Every authorization code and token carries a `subject` (the user id). Today it
-  is always `owner`.
+- Every authorization code and token carries a `subject` (the user id): `owner`
+  for me, the username for anyone else.
 - Login goes through one function, `authenticate(credentials) -> subject | None`.
-  Today it checks the single owner secret.
+  Owner only: the owner secret. With users: username (empty = owner) plus secret.
 - Tools never use a global `Bridge`. They call `bridge_for(subject)`, where the
-  subject comes from the access token. Today it returns the one Bridge.
+  subject comes from the access token.
 - `core.py` stays free of auth and MCP code and holds no per-process user state;
   a `Bridge` is one user's collection, lock and sync credentials.
 - Per-user data lives under one root: `data/<subject>/collection.anki2`
-  (today `data/owner/`, with `ANKI_COLLECTION` still overriding the path).
+  (`data/owner/` for me, with `ANKI_COLLECTION` still overriding my path).
 - Login rate limits key on client IP plus a global bucket, never on the claimed
   username alone (the attacker chooses it); a per-user key may be added later.
-- Per-user AnkiWeb credentials are not stored yet (env vars). Storing other
-  people's AnkiWeb passwords needs encryption at rest and is a decision for
-  that later project.
+- No AnkiWeb password is stored. Each person enters their AnkiWeb login on the
+  login page; only AnkiWeb's sync key is kept, encrypted so that it opens only with
+  that person's secret or their live tokens (vault.py). The admin cannot read it.
+  Mine may stay in the env file until I move it.
 
-Not built, on purpose: user table, signup or invite flow, per-user credential
-storage, per-user bootstrap tooling, quotas.
+Not built, on purpose: signup or invite flow, roles, admin UI, quotas, encrypted
+credential storage.
 
 ## Out of scope
 
 Reviewing in chat, media, scheduling changes, deck or note-type restructuring,
-multi-user accounts (only the seams above).
+self-service accounts (people are added by hand in the users file).
 
 ## Decisions
 

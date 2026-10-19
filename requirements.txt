@@ -1,3 +1,4 @@
 anki==26.9.3
 mcp>=2.2,<3
 pytest>=9
+cryptography>=44

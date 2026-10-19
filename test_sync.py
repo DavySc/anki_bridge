@@ -4,6 +4,7 @@ No test here touches real AnkiWeb. `python -m anki.syncserver` ships in the anki
 speaks the same protocol, so the real client talks to a real server on localhost.
 """
 
+import json
 import os
 import socket
 import subprocess
@@ -45,6 +46,7 @@ class Server:
     Account.seed(), which replaces what the server holds, or does not depend on its contents."""
 
     USER, PASSWORD = "user", "pass"
+    USER2, PASSWORD2 = "second", "pass2"  # a second person's own account (multi-user)
 
     def __init__(self):
         self.base = tempfile.mkdtemp()
@@ -58,6 +60,7 @@ class Server:
             "SYNC_PORT": str(self.port),
             "RUST_LOG": "anki=warn",
             "SYNC_USER1": f"{self.USER}:{self.PASSWORD}",
+            "SYNC_USER2": f"{self.USER2}:{self.PASSWORD2}",
         }
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "anki.syncserver"], env=env, stdout=self.log, stderr=self.log
@@ -89,9 +92,10 @@ def server():
 
 
 class Account:
-    def __init__(self, server: Server):
+    def __init__(self, server: Server, second: bool = False):
         self.server = server
-        self.url, self.user, self.password = server.url, server.USER, server.PASSWORD
+        self.url = server.url
+        self.user, self.password = (server.USER2, server.PASSWORD2) if second else (server.USER, server.PASSWORD)
         self.dir = tempfile.mkdtemp()
 
     def config(self, **override) -> SyncConfig:
@@ -627,3 +631,80 @@ def test_the_server_named_by_ankiweb_is_remembered_for_later_syncs(account, brid
     monkeypatch.setattr(bridge, "_sync_collection", lambda col: fake)
     bridge.sync()
     assert bridge._auth.endpoint == "https://sync99.example/"
+
+
+# ---- two people, two AnkiWeb accounts, logins saved encrypted (SPEC-multi-user.md) ---------------------
+
+
+def test_two_people_log_in_with_ankiweb_and_sync_at_once(server):
+    """Through the real login page: the owner (no env login) and alice each enter their AnkiWeb
+    login. Alice's collection is downloaded at her login. Both write at the same moment; each note
+    reaches only its own person's phone. After a restart the same tokens still sync, and the
+    database never held a password or sync key in the clear."""
+    from starlette.testclient import TestClient
+
+    import server as srv
+    from auth import hash_secret
+    from core import ankiweb_login
+    from test_server_auth import PUBLIC, env, make_app, oauth_login, tool
+
+    owner_acc, alice_acc = Account(server), Account(server, second=True)
+    owner_acc.seed()
+    alice_acc.seed()
+    alice_secret = "alice's own long secret"
+    data = tempfile.mkdtemp()
+    users_toml = os.path.join(data, "users.toml")
+    with open(users_toml, "w") as f:
+        f.write(f"[users.alice]\nsecret_hash = '{hash_secret(alice_secret)}'\n")
+    os.chmod(users_toml, 0o600)
+    e = env(DATA_DIR=data, USERS_FILE=users_toml, ANKIWEB_ENDPOINT=server.url)  # no ANKIWEB_USER/PASS
+    cfg = srv.load_config(e)
+    owner_path = srv.Bridges(cfg).collection_path("owner")
+    os.makedirs(os.path.dirname(owner_path))
+    phone = owner_acc.phone("owner-server")  # the owner's collection, as bootstrap.py left it
+    phone.close()
+    os.replace(owner_acc._path("owner-server"), owner_path)
+
+    def login(tc, acc, **kw):
+        t = oauth_login(tc, extra={"ankiweb_user": acc.user, "ankiweb_pass": acc.password}, **kw)[0]
+        assert t.status_code == 200, t.text
+        return t.json()["access_token"]
+
+    app, _ = make_app(cfg)
+    with TestClient(app, base_url=PUBLIC) as tc:
+        owner = login(tc, owner_acc, username="")
+        alice = login(tc, alice_acc, username="alice", secret=alice_secret)
+        assert os.path.exists(os.path.join(data, "alice", "collection.anki2"))  # downloaded at login
+
+        results, start = {}, threading.Barrier(2)
+
+        def write(name, token):
+            start.wait()
+            results[name] = tool(tc, "add_notes", {"notes": [basic(front=f"{name}'s note")], "approved_by_user": True}, token)
+
+        threads = [threading.Thread(target=write, args=a) for a in (("owner", owner), ("alice", alice))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        for name, res in results.items():
+            assert not res.get("isError"), (name, res)
+            out = json.loads(res["content"][0]["text"])
+            assert out["sync_before"] == out["sync_after"] == "synced", (name, out)
+
+    owner_phone, alice_phone = owner_acc.phone("owner-phone"), alice_acc.phone("alice-phone")
+    assert list(note_texts(owner_phone)) == ["owner's note"]
+    assert list(note_texts(alice_phone)) == ["alice's note"]
+    owner_phone.close()
+    alice_phone.close()
+
+    app2, _ = make_app(srv.load_config(e))  # the service restarts
+    with TestClient(app2, base_url=PUBLIC) as tc:
+        for token in (owner, alice):
+            assert json.loads(tool(tc, "sync", token=token)["content"][0]["text"]) == {"result": "synced"}
+
+    raw = open(os.path.join(data, "auth.sqlite3"), "rb").read()
+    for acc in (owner_acc, alice_acc):
+        hkey = ankiweb_login(acc.user, acc.password, acc.url).hkey
+        for secret in (acc.password, hkey, acc.user):
+            assert secret.encode() not in raw, secret

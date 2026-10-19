@@ -1,0 +1,12 @@
+# Copy to /srv/anki-bridge/users.toml, chmod 600, owner anki, and set USERS_FILE to it in the env
+# file. Names only here: put real values on the VPS, never in this repository.
+# The owner is not listed: they stay configured by OWNER_SECRET_HASH in the env file.
+# Restart the service after every change.
+#
+# No AnkiWeb logins here: each person enters theirs on the login page, and the server keeps only
+# AnkiWeb's sync key, encrypted so that it opens only with their own secret.
+
+# One table per person. The name is their login username: lowercase letters, digits, - or _.
+# Start it with: nix develop --command python auth.py hash alice   (they type their secret)
+[users.alice]
+secret_hash = 'REPLACE_ME'

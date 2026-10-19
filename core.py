@@ -17,10 +17,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator, Mapping
 
+from anki._backend import RustBackend
 from anki.collection import AddNoteRequest, Collection
 from anki.errors import NetworkError, SearchError, SyncError, SyncErrorKind
 from anki.notes import Note
-from anki.sync_pb2 import SyncAuth, SyncCollectionResponse
+from anki.sync_pb2 import SyncAuth, SyncCollectionResponse, SyncLoginRequest
 
 # Note.fields_check() returns a plain int.
 FIELD_CHECK = {
@@ -111,9 +112,18 @@ def _unsafe_attr(tag: str, name: str, raw: str) -> str | None:
 
 @dataclass
 class SyncConfig:
+    """An AnkiWeb login: a password (env vars), or only the sync key AnkiWeb gave for one
+    (hkey; what the server keeps for people who logged in on the login page, like Anki itself)."""
+
     username: str
     password: str
     endpoint: str | None = None
+    hkey: str | None = None
+
+    def auth(self) -> SyncAuth:
+        """The saved sync key as Anki wants it. Only for a config with an hkey."""
+        assert self.hkey
+        return SyncAuth(hkey=self.hkey, endpoint=self.endpoint) if self.endpoint else SyncAuth(hkey=self.hkey)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> "SyncConfig | None":
@@ -124,12 +134,41 @@ class SyncConfig:
         return cls(user, pw, env.get("ANKIWEB_ENDPOINT") or None)
 
 
+def ankiweb_login(username: str, password: str, endpoint: str | None = None) -> SyncConfig:
+    """Log in to AnkiWeb once and return the sync key for that login; the password is not kept.
+    Needs no collection."""
+    try:
+        auth = RustBackend().sync_login(SyncLoginRequest(username=username, password=password, endpoint=endpoint))
+    except SyncError as e:
+        if e.kind == SyncErrorKind.AUTH:
+            raise BridgeError("AnkiWeb did not accept that email and password.") from None
+        raise BridgeError(f"AnkiWeb login failed: {str(e).replace(password, '***')}") from None
+    except NetworkError:
+        raise BridgeError("Could not reach AnkiWeb (network error). Try again.") from None
+    return SyncConfig(username, "", auth.endpoint or endpoint, auth.hkey)
+
+
 class Bridge:
     def __init__(self, collection_path: str, sync: SyncConfig | None = None):
         self.path = collection_path
         self.sync_cfg = sync
         self._lock = threading.Lock()
         self._auth: SyncAuth | None = None  # AnkiWeb login key, reused until AnkiWeb rejects it
+
+    def use_sync(self, sync: SyncConfig) -> None:
+        """Switch to another AnkiWeb login (the person entered theirs again). The cached login key
+        belonged to the old one. Waits like a call does, so no sync is using it meanwhile."""
+        if sync == self.sync_cfg:
+            return
+        if not self._lock.acquire(timeout=LOCK_WAIT):
+            raise BridgeError(
+                "The collection is busy with another call, usually an AnkiWeb sync. "
+                "Nothing was done; try again in a minute."
+            )
+        try:
+            self.sync_cfg, self._auth = sync, None
+        finally:
+            self._lock.release()
 
     # ---- plumbing -------------------------------------------------------
 
@@ -198,16 +237,18 @@ class Bridge:
 
     def _sync_collection(self, col: Collection) -> SyncCollectionResponse:
         """Logs in only without a key or after AnkiWeb rejected the cached one, not on every
-        sync: AnkiWeb may rate-limit logins."""
+        sync: AnkiWeb may rate-limit logins. A config with only a saved key cannot log in again."""
+        cfg = self.sync_cfg
+        assert cfg is not None
+        if self._auth is None and cfg.hkey:
+            self._auth = cfg.auth()
         if self._auth is not None:
             try:
                 return col.sync_collection(self._auth, sync_media=False)
             except SyncError as e:
-                if e.kind != SyncErrorKind.AUTH:
+                if e.kind != SyncErrorKind.AUTH or not cfg.password:
                     raise
                 self._auth = None  # expired or revoked: log in again, once
-        cfg = self.sync_cfg
-        assert cfg is not None
         self._auth = col.sync_login(cfg.username, cfg.password, cfg.endpoint)
         return col.sync_collection(self._auth, sync_media=False)
 
@@ -215,14 +256,20 @@ class Bridge:
         """A sync failure as a message for Claude. mcp 2.x shows the model only BridgeError text,
         and the password must never be in it."""
         if isinstance(exc, SyncError) and exc.kind == SyncErrorKind.AUTH:
+            if self.sync_cfg and not self.sync_cfg.password:
+                return BridgeError(
+                    "AnkiWeb rejected the saved login (was the AnkiWeb password changed?). "
+                    "Log in to the bridge again and enter your AnkiWeb login on the login page."
+                )
             return BridgeError(
                 "AnkiWeb login failed. Check ANKIWEB_USER and ANKIWEB_PASS on the server."
             )
         if isinstance(exc, NetworkError):
             return BridgeError("Could not reach AnkiWeb (network error).")
         text = str(exc)
-        if self.sync_cfg and self.sync_cfg.password:
-            text = text.replace(self.sync_cfg.password, "***")
+        for secret in (self.sync_cfg.password, self.sync_cfg.hkey) if self.sync_cfg else ():
+            if secret:
+                text = text.replace(secret, "***")
         return BridgeError(f"AnkiWeb sync failed: {text}")
 
     def _sync_before_write(self, col: Collection) -> str:

@@ -54,6 +54,25 @@ def test_env_example_never_enables_the_insecure_mode_and_holds_no_secrets():
     assert "REPLACE_ME" in env["OWNER_SECRET_HASH"]
 
 
+def test_env_example_leaves_other_people_off():
+    assert "USERS_FILE" not in env_example()  # commented out: the owner-only server is the default
+    assert "#USERS_FILE=/srv/anki-bridge/users.toml" in read("env.example")
+
+
+def test_users_example_is_refused_as_is_and_loads_once_filled_in():
+    from users import UsersFileError, load_users
+
+    path = os.path.join(tempfile.mkdtemp(), "users.toml")
+    with open(path, "w") as f:
+        f.write(read("users.example.toml"))
+    os.chmod(path, 0o600)
+    with pytest.raises(UsersFileError):
+        load_users(path)
+    with open(path, "w") as f:
+        f.write(read("users.example.toml").replace("REPLACE_ME", hash_secret("x")))
+    assert list(load_users(path)) == ["alice"]
+
+
 def test_service_and_nginx_use_the_port_from_the_env_file():
     port = env_example()["PORT"]
     assert port != "8000"  # the other site on the VPS

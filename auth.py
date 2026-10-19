@@ -1,8 +1,14 @@
-"""Single-user OAuth provider for the MCP server. No Anki code here.
+"""OAuth provider for the MCP server. No Anki code here.
 
 The SDK serves the OAuth endpoints; this module supplies storage and the
-decision of who may log in. Multi-user is not built, but the seams are:
-every grant carries a `subject`, and login goes through an `Authenticator`.
+decision of who may log in. Every grant carries a `subject`, and login goes
+through an `Authenticator`: the owner alone, or the owner plus the people in
+the users file (users.py).
+
+It also keeps each person's AnkiWeb login, encrypted (vault.py): the login page
+unlocks it with their secret, and every code and token of that login carries the
+key, wrapped under the token itself. The Anki side (checking the login with
+AnkiWeb, the first download) is a `SyncSetup` that server.py supplies.
 """
 
 from __future__ import annotations
@@ -13,6 +19,7 @@ import hmac
 import ipaddress
 import logging
 import os
+import re
 import sqlite3
 import getpass
 import html
@@ -39,14 +46,19 @@ from mcp.server.auth.provider import (
     construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+import vault
 
 logger = logging.getLogger("anki_bridge.auth")
 
 # The one place the owner's subject is defined. Do not repeat the literal.
 OWNER_SUBJECT = "owner"
+# Other people's usernames, which are also their subjects and directory names under DATA_DIR.
+USERNAME_OK = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 # Rule = scheme://host[:port][/path]. A rule without a port allows any port, which is only
 # sensible for loopback; a non-loopback rule must match the URI's host exactly. A rule with a
@@ -118,6 +130,28 @@ class OwnerAuthenticator:
         if secret and verify_secret(secret, self._hash):
             return OWNER_SUBJECT
         return None
+
+
+class UsersAuthenticator:
+    """The owner plus other people. An empty username is the owner, with the owner's secret as
+    before; any other username must be a configured name with that person's own secret."""
+
+    asks_username = True
+
+    def __init__(self, owner_hash: str, user_hashes: Mapping[str, str]):
+        self._owner = owner_hash
+        self._users = {n: h for n, h in user_hashes.items() if USERNAME_OK.match(n) and n != OWNER_SUBJECT}
+        # An unknown name costs one scrypt like a known one, so timing does not reveal names.
+        self._dummy = hash_secret(secrets.token_urlsafe(16))
+
+    def authenticate(self, credentials: dict[str, str]) -> str | None:
+        name = credentials.get("username", "").strip().lower()
+        stored = self._users.get(name) if name else self._owner
+        secret = credentials.get("secret", "")
+        ok = verify_secret(secret, stored or self._dummy)
+        if not (ok and stored and secret):
+            return None
+        return name or OWNER_SUBJECT
 
 
 # ---- provider ----------------------------------------------------------------
@@ -198,8 +232,11 @@ class OwnerProvider:
         public_url: str = "http://127.0.0.1:8000",
         resource_url: str | None = None,
         now: Callable[[], float] = time.time,
+        subject_ok: Callable[[str], bool] = lambda subject: True,
     ):
         self.path = path
+        # Grants of someone no longer configured (removed from the users file) stop working.
+        self._subject_ok = subject_ok
         self._server_key = server_key
         self.public_url = public_url.rstrip("/")
         # When set, tokens are only issued for this resource (the MCP endpoint).
@@ -235,6 +272,17 @@ class OwnerProvider:
                 " expires_at REAL NOT NULL"
                 + (", rotated INTEGER NOT NULL DEFAULT 0)" if table == "refresh_tokens" else ")")
             )
+        # The person's data key, wrapped under the code or token itself (vault.py). Added in place,
+        # so grants made before it keep working; they just carry no key.
+        for table in ("codes", "access_tokens", "refresh_tokens"):
+            if "wrapped_key" not in [row[1] for row in self._db.execute(f"PRAGMA table_info({table})")]:
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN wrapped_key BLOB")
+        # One AnkiWeb login per person, encrypted. account_tag (keyed hash of the AnkiWeb email)
+        # stops two people from saving the same account without storing the email in the clear.
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS vaults (subject TEXT PRIMARY KEY, salt BLOB NOT NULL,"
+            " wrapped_key BLOB NOT NULL, credential BLOB NOT NULL, account_tag TEXT NOT NULL)"
+        )
         self._db.commit()
 
     def _exec(self, sql: str, args: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
@@ -332,8 +380,9 @@ class OwnerProvider:
         redirect = urlparse(str(AuthorizationParams.model_validate_json(params).redirect_uri))
         return name, redirect.netloc
 
-    def complete_login(self, req_id: str, subject: str) -> str | None:
+    def complete_login(self, req_id: str, subject: str, data_key: bytes | None = None) -> str | None:
         """Consume the pending request and return the client's redirect URL with a fresh code.
+        The code carries the person's data key (if unlocked), wrapped under the code.
 
         None if the request is unknown, expired or already used. The only place a
         redirect is built, and it only ever targets the redirect_uri the SDK validated.
@@ -353,7 +402,7 @@ class OwnerProvider:
         code = secrets.token_urlsafe(32)
         self._exec(
             "INSERT INTO codes (code_hash, client_id, subject, scopes, expires_at, code_challenge,"
-            " redirect_uri, explicit, resource, grant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " redirect_uri, explicit, resource, grant_id, wrapped_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _sha256(code),
                 client_id,
@@ -365,6 +414,7 @@ class OwnerProvider:
                 int(params.redirect_uri_provided_explicitly),
                 params.resource or self.resource_url,
                 secrets.token_urlsafe(16),
+                self._wrap(data_key, code, subject),
             ),
         )
         return construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state)
@@ -380,7 +430,7 @@ class OwnerProvider:
         if not rows:
             return None
         client_id, subject, scopes, expires_at, challenge, redirect_uri, explicit, resource, grant_id = rows[0]
-        if client_id != client.client_id or expires_at < self._now():
+        if client_id != client.client_id or expires_at < self._now() or not self._subject_ok(subject):
             return None
         return OwnerAuthorizationCode(
             grant_id=grant_id,
@@ -412,7 +462,14 @@ class OwnerProvider:
             db.execute(f"DELETE FROM {table} WHERE grant_id = ?", (grant_id,))
 
     def _issue(
-        self, db: sqlite3.Connection, grant_id: str, client_id: str, subject: str, scopes: list[str], resource: str | None
+        self,
+        db: sqlite3.Connection,
+        grant_id: str,
+        client_id: str,
+        subject: str,
+        scopes: list[str],
+        resource: str | None,
+        data_key: bytes | None,
     ) -> OAuthToken:
         now = self._now()
         for table in ("access_tokens", "refresh_tokens"):
@@ -420,9 +477,10 @@ class OwnerProvider:
         access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         for table, token, ttl in (("access_tokens", access, ACCESS_TTL), ("refresh_tokens", refresh, REFRESH_TTL)):
             db.execute(
-                f"INSERT INTO {table} (token_hash, grant_id, client_id, subject, scopes, resource, expires_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (_sha256(token), grant_id, client_id, subject, json.dumps(scopes), resource, now + ttl),
+                f"INSERT INTO {table} (token_hash, grant_id, client_id, subject, scopes, resource, expires_at,"
+                " wrapped_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (_sha256(token), grant_id, client_id, subject, json.dumps(scopes), resource, now + ttl,
+                 self._wrap(data_key, token, subject)),
             )
         return OAuthToken(
             access_token=access, expires_in=ACCESS_TTL, scope=" ".join(scopes), refresh_token=refresh
@@ -439,13 +497,18 @@ class OwnerProvider:
                 (_sha256(authorization_code.code), client.client_id),
             ).rowcount
             if used == 1:
+                subject = authorization_code.subject or OWNER_SUBJECT
+                (wrapped,) = db.execute(
+                    "SELECT wrapped_key FROM codes WHERE code_hash = ?", (_sha256(authorization_code.code),)
+                ).fetchone()
                 return self._issue(
                     db,
                     authorization_code.grant_id,
                     client.client_id,
-                    authorization_code.subject or OWNER_SUBJECT,
+                    subject,
                     authorization_code.scopes,
                     authorization_code.resource,
+                    self._unwrap(wrapped, authorization_code.code, subject),
                 )
             self._revoke_grant(db, authorization_code.grant_id)
         # Raised after the transaction commits, so the revocation sticks.
@@ -460,7 +523,7 @@ class OwnerProvider:
         if not rows:
             return None
         grant_id, client_id, subject, scopes, resource, expires_at = rows[0]
-        if expires_at < self._now():
+        if expires_at < self._now() or not self._subject_ok(subject):
             return None
         return OwnerAccessToken(
             token=token,
@@ -483,7 +546,7 @@ class OwnerProvider:
         if not rows:
             return None
         grant_id, client_id, subject, scopes, resource, expires_at, rotated = rows[0]
-        if client_id != client.client_id or expires_at < self._now():
+        if client_id != client.client_id or expires_at < self._now() or not self._subject_ok(subject):
             return None
         return OwnerRefreshToken(
             token=refresh_token,
@@ -507,14 +570,19 @@ class OwnerProvider:
                 (_sha256(refresh_token.token), client.client_id),
             ).rowcount
             if fresh == 1:
+                subject = refresh_token.subject or OWNER_SUBJECT
+                (wrapped,) = db.execute(
+                    "SELECT wrapped_key FROM refresh_tokens WHERE token_hash = ?", (_sha256(refresh_token.token),)
+                ).fetchone()
                 db.execute("DELETE FROM access_tokens WHERE grant_id = ?", (refresh_token.grant_id,))
                 return self._issue(
                     db,
                     refresh_token.grant_id,
                     client.client_id,
-                    refresh_token.subject or OWNER_SUBJECT,
+                    subject,
                     scopes,
                     refresh_token.resource,
+                    self._unwrap(wrapped, refresh_token.token, subject),
                 )
             self._revoke_grant(db, refresh_token.grant_id)
         raise TokenError("invalid_grant", "refresh token already used; grant revoked")
@@ -525,6 +593,65 @@ class OwnerProvider:
         if grant_id:
             with self._tx() as db:
                 self._revoke_grant(db, grant_id)
+
+    # ---- AnkiWeb logins, encrypted (vault.py) ----------------------------------
+
+    @staticmethod
+    def _wrap(data_key: bytes | None, token: str, subject: str) -> bytes | None:
+        return vault.seal(vault.token_key(token), data_key, f"data-key|{subject}") if data_key else None
+
+    @staticmethod
+    def _unwrap(wrapped: bytes | None, token: str, subject: str) -> bytes | None:
+        return vault.unseal(vault.token_key(token), wrapped, f"data-key|{subject}")
+
+    def data_key(self, access_token: str) -> bytes | None:
+        """The data key a live access token carries, or None (expired, unknown, or a grant made
+        without one)."""
+        rows = self._exec(
+            "SELECT subject, expires_at, wrapped_key FROM access_tokens WHERE token_hash = ?", (_sha256(access_token),)
+        )
+        if not rows or rows[0][1] < self._now() or not self._subject_ok(rows[0][0]):
+            return None
+        return self._unwrap(rows[0][2], access_token, rows[0][0])
+
+    def has_vault(self, subject: str) -> bool:
+        return bool(self._exec("SELECT 1 FROM vaults WHERE subject = ?", (subject,)))
+
+    def unlock_vault(self, subject: str, secret: str) -> bytes | None:
+        """The person's data key, from their login secret. None without a vault, or if this secret
+        did not make it (the secret was changed since)."""
+        rows = self._exec("SELECT salt, wrapped_key FROM vaults WHERE subject = ?", (subject,))
+        if not rows:
+            return None
+        salt, wrapped = rows[0]
+        return vault.unseal(vault.secret_key(secret, salt), wrapped, f"data-key|{subject}")
+
+    def save_vault(self, subject: str, secret: str, credential: dict[str, str]) -> bytes:
+        """Store `credential` (an AnkiWeb login: username, hkey, endpoint) encrypted, and return the
+        data key. An existing data key is kept when this secret unlocks it, so the person's other
+        connections stay unlocked."""
+        tag = hmac.new(self._server_key, b"ankiweb-account|" + credential["username"].strip().lower().encode(),
+                       hashlib.sha256).hexdigest()
+        data_key = self.unlock_vault(subject, secret) or vault.new_key()
+        salt = os.urandom(16)
+        row = (
+            subject,
+            salt,
+            vault.seal(vault.secret_key(secret, salt), data_key, f"data-key|{subject}"),
+            vault.seal(data_key, json.dumps(credential).encode(), f"ankiweb|{subject}"),
+            tag,
+        )
+        with self._tx() as db:
+            if db.execute("SELECT 1 FROM vaults WHERE account_tag = ? AND subject != ?", (tag, subject)).fetchone():
+                raise LoginProblem("That AnkiWeb account is already used by someone else on this server.")
+            db.execute("INSERT OR REPLACE INTO vaults (subject, salt, wrapped_key, credential, account_tag)"
+                       " VALUES (?, ?, ?, ?, ?)", row)
+        return data_key
+
+    def vault_credential(self, subject: str, data_key: bytes) -> dict[str, str] | None:
+        rows = self._exec("SELECT credential FROM vaults WHERE subject = ?", (subject,))
+        plain = vault.unseal(data_key, rows[0][0], f"ankiweb|{subject}") if rows else None
+        return json.loads(plain) if plain else None
 
 
 # ---- login page ----------------------------------------------------------------
@@ -542,6 +669,29 @@ def rate_limit_key(ip: str) -> str:
             return f"ip:{addr.ipv4_mapped}"
         return f"ip:{ipaddress.IPv6Network((addr, 64), strict=False)}"
     return f"ip:{addr}"
+
+
+class LoginProblem(Exception):
+    """The person logged in correctly, but the AnkiWeb part failed. Shown on the login page; not
+    a failed login, so the rate limit does not count it."""
+
+
+class SyncSetup(Protocol):
+    """The Anki side of the login page's AnkiWeb fields (server.py supplies it). Methods run in a
+    worker thread and raise LoginProblem with a message for the person."""
+
+    def ankiweb_optional(self, subject: str) -> bool:
+        """This person may log in without saving an AnkiWeb login (the owner: env vars, or sync off,
+        as before there were saved logins)."""
+        ...
+
+    def login(self, subject: str, username: str, password: str) -> dict[str, str]:
+        """Check the login with AnkiWeb; the credential to keep (no password in it)."""
+        ...
+
+    def prepare(self, subject: str, credential: dict[str, str]) -> None:
+        """Download the person's collection if the server has none yet."""
+        ...
 
 
 class LoginLimiter:
@@ -611,7 +761,8 @@ _NO_STORE = {
 _PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Anki bridge login</title>
 <style>body{{font-family:system-ui;max-width:22rem;margin:4rem auto;padding:0 1rem}}
-input,button{{width:100%;padding:.6rem;margin:.4rem 0;font-size:1rem}}.e{{color:#b00}}</style></head>
+input,button{{width:100%;padding:.6rem;margin:.4rem 0;font-size:1rem}}.e{{color:#b00}}
+summary{{margin:.6rem 0;cursor:pointer}}.n{{font-size:.85rem;color:#555}}</style></head>
 <body><h1>Anki bridge</h1>{body}</body></html>"""
 
 
@@ -619,16 +770,39 @@ def _page(body: str, status: int = 200) -> HTMLResponse:
     return HTMLResponse(_PAGE.format(body=body), status_code=status, headers=_NO_STORE)
 
 
-def _login_form(req_id: str, who: tuple[str, str], error: str = "") -> str:
+_ANKIWEB_FIELDS = (
+    "<details{open}><summary>AnkiWeb login (the first time, or to change it)</summary>"
+    '<input name="ankiweb_user" placeholder="AnkiWeb email" inputmode="email" autocomplete="off"'
+    ' autocapitalize="none" spellcheck="false">'
+    '<input type="password" name="ankiweb_pass" placeholder="AnkiWeb password" autocomplete="off">'
+    "<p class=n>Checked with AnkiWeb. The password is not kept: only AnkiWeb's sync key, encrypted"
+    " so that it opens only with your secret.</p></details>"
+)
+
+
+def _login_form(
+    req_id: str, who: tuple[str, str], error: str = "", username: str | None = None, ankiweb: bool | None = None
+) -> str:
+    """username None: no username field (the owner alone). A string: a username field, prefilled
+    with it after a failed attempt. ankiweb None: no AnkiWeb fields; True/False: shown, open or not."""
     name, host = who
+    if username is None:
+        fields = '<input type="password" name="secret" placeholder="Owner secret" autofocus required>'
+    else:
+        fields = (
+            f'<input name="username" value="{html.escape(username[:64])}" placeholder="Username (empty for the owner)"'
+            ' autocomplete="username" autocapitalize="none" spellcheck="false" autofocus>'
+            '<input type="password" name="secret" placeholder="Secret" autocomplete="current-password" required>'
+        )
     return (
         (f"<p class=e>{error}</p>" if error else "")
         + f"<p><b>{html.escape(name[:100])}</b> asks for access to your Anki collection. After you"
         f" log in, your browser goes to <b>{html.escape(host)}</b>. If you did not just connect"
         " Claude to this server, close this page.</p>"
         f'<form method="post"><input type="hidden" name="req" value="{html.escape(req_id)}">'
-        '<input type="password" name="secret" placeholder="Owner secret" autofocus required>'
-        "<button>Authorize</button></form>"
+        + fields
+        + ("" if ankiweb is None else _ANKIWEB_FIELDS.format(open=" open" if ankiweb else ""))
+        + "<button>Authorize</button></form>"
     )
 
 
@@ -650,8 +824,38 @@ def make_login_handler(
     authenticator: Authenticator,
     limiter: LoginLimiter,
     client_ip: Callable[[Request], str] = default_client_ip,
+    sync_setup: SyncSetup | None = None,
 ):
-    """Starlette handler for GET/POST /login. Register it unauthenticated (custom_route)."""
+    """Starlette handler for GET/POST /login. Register it unauthenticated (custom_route).
+    The username field is shown only if the authenticator asks for one (asks_username), the
+    AnkiWeb fields only with a sync_setup."""
+    asks_username = getattr(authenticator, "asks_username", False)
+    ankiweb_shown = False if sync_setup is not None else None
+
+    def ankiweb_step(subject: str, secret: str, ankiweb_user: str, ankiweb_pass: str) -> bytes | None:
+        """After a correct login: the data key the new grant carries. A newly entered AnkiWeb
+        login is checked and saved; otherwise the saved one is unlocked with the secret."""
+        assert sync_setup is not None
+        if ankiweb_user or ankiweb_pass:
+            if not (ankiweb_user and ankiweb_pass):
+                raise LoginProblem("Enter both your AnkiWeb email and password, or neither.")
+            credential = sync_setup.login(subject, ankiweb_user, ankiweb_pass)
+            data_key = provider.save_vault(subject, secret, credential)
+        elif provider.has_vault(subject):
+            unlocked = provider.unlock_vault(subject, secret)
+            stored = provider.vault_credential(subject, unlocked) if unlocked else None
+            if unlocked is None or stored is None:
+                raise LoginProblem(
+                    "Your saved AnkiWeb login cannot be opened with this secret (was the secret changed?). "
+                    "Enter your AnkiWeb login again."
+                )
+            data_key, credential = unlocked, stored
+        elif sync_setup.ankiweb_optional(subject):
+            return None
+        else:
+            raise LoginProblem("Enter your AnkiWeb login: the bridge needs it to sync your cards.")
+        sync_setup.prepare(subject, credential)
+        return data_key
 
     async def login(request: Request) -> Response:
         if request.method == "POST":
@@ -665,7 +869,7 @@ def make_login_handler(
             return _page("<p class=e>This login link is invalid or has expired. Start again from Claude.</p>", 400)
 
         if form is None:
-            return _page(_login_form(req_id, who))
+            return _page(_login_form(req_id, who, username="" if asks_username else None, ankiweb=ankiweb_shown))
 
         ip = client_ip(request)
         ip_key = rate_limit_key(ip)
@@ -678,11 +882,24 @@ def make_login_handler(
         if subject is None:
             limiter.hit(ip_key)
             limiter.hit("global")
-            logger.warning("login failed: wrong secret (client %r)", ip)
-            return _page(_login_form(req_id, who, "Wrong secret."), 401)
+            if not asks_username:
+                logger.warning("login failed: wrong secret (client %r)", ip)
+                return _page(_login_form(req_id, who, "Wrong secret.", ankiweb=ankiweb_shown), 401)
+            username = credentials.get("username", "")
+            logger.warning("login failed: wrong username or secret (username %r, client %r)", username[:64], ip)
+            return _page(_login_form(req_id, who, "Wrong username or secret.", username, ankiweb_shown), 401)
         logger.info("login succeeded for %s (client %r)", subject, ip)
         limiter.clear(ip_key)
-        url = provider.complete_login(req_id, subject)
+        data_key = None
+        if sync_setup is not None:
+            ankiweb_user, ankiweb_pass = str(form.get("ankiweb_user", "")).strip(), str(form.get("ankiweb_pass", ""))
+            try:
+                data_key = await run_in_threadpool(ankiweb_step, subject, credentials.get("secret", ""), ankiweb_user, ankiweb_pass)
+            except LoginProblem as e:
+                logger.info("login for %s stopped at the AnkiWeb step: %s", subject, e)
+                username = credentials.get("username", "") if asks_username else None
+                return _page(_login_form(req_id, who, html.escape(str(e)), username, True), 400)
+        url = provider.complete_login(req_id, subject, data_key)
         if url is None:
             return _page("<p class=e>This login link is invalid or has expired. Start again from Claude.</p>", 400)
         return RedirectResponse(url, status_code=302, headers=_NO_STORE)
@@ -691,14 +908,20 @@ def make_login_handler(
 
 
 def main(argv: list[str], prompt: Callable[[str], str] = getpass.getpass) -> str:
-    if argv != ["hash"]:
-        sys.exit("usage: python auth.py hash")
-    first = prompt("Owner secret: ")
+    """`hash`: the owner's line for the env file. `hash NAME`: a [users.NAME] entry for the users file."""
+    if len(argv) not in (1, 2) or argv[0] != "hash":
+        sys.exit("usage: python auth.py hash [username]")
+    name = argv[1] if len(argv) == 2 else None
+    if name is not None and (name == OWNER_SUBJECT or not USERNAME_OK.match(name)):
+        sys.exit(f"A username is lowercase letters, digits, - or _ (at most 32), and not {OWNER_SUBJECT!r}.")
+    first = prompt("Owner secret: " if name is None else f"Secret for {name}: ")
     if len(first) < 12:
         sys.exit("Use at least 12 characters.")
     if prompt("Again: ") != first:
         sys.exit("Secrets do not match.")
-    return f"OWNER_SECRET_HASH='{hash_secret(first)}'"
+    if name is None:
+        return f"OWNER_SECRET_HASH='{hash_secret(first)}'"
+    return f"[users.{name}]\nsecret_hash = '{hash_secret(first)}'"
 
 
 if __name__ == "__main__":

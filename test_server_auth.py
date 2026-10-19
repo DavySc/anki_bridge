@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 import server
 from auth import OWNER_SUBJECT, hash_secret
 from server import Bridges, Config, ConfigError, build_server, load_config, transport_security
+from users import User
 
 PUBLIC = "https://anki.example"
 SECRET = "correct horse battery"
@@ -89,8 +90,9 @@ def tool(tc, name, args=None, token=None):
     return r.json()["result"]
 
 
-def oauth_login(tc, secret=SECRET, client_id=None, client_secret=None, verifier="v" * 50):
-    """register -> authorize -> login -> token. Returns (token_json, client_id, client_secret)."""
+def oauth_login(tc, secret=SECRET, client_id=None, client_secret=None, verifier="v" * 50, username=None, extra=None):
+    """register -> authorize -> login -> token. Returns (token_json, client_id, client_secret).
+    username None posts the owner-only form (no username field); extra adds form fields."""
     if client_id is None:
         reg = tc.post(
             "/register",
@@ -122,7 +124,9 @@ def oauth_login(tc, secret=SECRET, client_id=None, client_secret=None, verifier=
     login_url = a.headers["location"]
     assert urlparse(login_url).path == "/login"
     req = parse_qs(urlparse(login_url).query)["req"][0]
-    l = tc.post("/login", data={"req": req, "secret": secret}, follow_redirects=False)
+    form = {"req": req, "secret": secret} if username is None else {"req": req, "username": username, "secret": secret}
+    form.update(extra or {})
+    l = tc.post("/login", data=form, follow_redirects=False)
     if l.status_code != 302:
         return l, client_id, client_secret
     code = parse_qs(urlparse(l.headers["location"]).query)["code"][0]
@@ -327,6 +331,8 @@ def test_other_subject_token_reaches_other_bridge(monkeypatch):
             return "other" if c.get("secret") == "other-pw" else None
 
     cfg = load_config(env())
+    cfg.users = {"other": User("other", hash_secret("unused"))}  # tokens only work for configured people
+    monkeypatch.setattr(server.AnkiWebSetup, "ankiweb_optional", lambda self, s: True)  # the seam, not AnkiWeb
     seed_collection(cfg, subject="other", deck="Only in other")
     mcp, _ = build_server(cfg, authenticator=Other())
     app = mcp.streamable_http_app(streamable_http_path="/mcp", stateless_http=True, json_response=True,

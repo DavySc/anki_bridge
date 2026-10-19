@@ -1,11 +1,14 @@
-"""MCP server exposing six Anki tools, behind single-user OAuth. Run: python server.py
+"""MCP server exposing six Anki tools, behind OAuth. Run: python server.py
 
 Env:
   PUBLIC_URL           public https URL of this server (OAuth issuer), e.g. https://anki.example.com
   OWNER_SECRET_HASH    from `python auth.py hash`
   ANKI_COLLECTION      collection path for the owner (default <DATA_DIR>/owner/collection.anki2)
   DATA_DIR             root for per-user data and the auth database (default ./data)
-  ANKIWEB_USER / ANKIWEB_PASS   AnkiWeb login (omit to run without sync)
+  ANKIWEB_USER / ANKIWEB_PASS   the owner's AnkiWeb login, in the clear (optional: without it the
+                       owner enters it on the login page, where it is stored encrypted)
+  ANKIWEB_ENDPOINT     sync server instead of AnkiWeb (tests)
+  USERS_FILE           TOML file with other people (users.py); unset = the owner only
   HOST / PORT          bind address (default 127.0.0.1:8000, put a reverse proxy in front)
   REDIRECT_ALLOWLIST   comma-separated OAuth redirect rules (default: Claude + loopback)
   TRUST_PROXY=1        take the client IP from the proxy's X-Forwarded-For (behind a reverse proxy)
@@ -21,6 +24,7 @@ import os
 import re
 import sys
 import threading
+import traceback
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Callable, Mapping
 from urllib.parse import urlparse
@@ -42,8 +46,10 @@ from auth import (
     REGISTRATIONS_PER_IP,
     Authenticator,
     LoginLimiter,
+    LoginProblem,
     OwnerAuthenticator,
     OwnerProvider,
+    UsersAuthenticator,
     RegistrationLimit,
     is_loopback,
     derive_server_key,
@@ -52,7 +58,9 @@ from auth import (
     make_login_handler,
     redirect_allowlist_from_env,
 )
-from core import Bridge, BridgeError, SyncConfig
+from bootstrap import download_new
+from core import Bridge, BridgeError, SyncConfig, ankiweb_login
+from users import User, UsersFileError, load_users
 
 MCP_PATH = "/mcp"
 _SUBJECT_OK = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -113,11 +121,13 @@ class Config:
     port: int = 8000
     data_dir: str = "./data"
     collection: str | None = None  # overrides the owner's collection path
-    sync: SyncConfig | None = None
+    sync: SyncConfig | None = None  # the owner's login from the env vars, if set there
+    ankiweb_endpoint: str | None = None
     public_url: str | None = None  # None only in insecure dev mode
     owner_secret_hash: str | None = None
     redirect_allowlist: list[str] = field(default_factory=list)
     trust_proxy: bool = False
+    users: dict[str, User] = field(default_factory=dict)  # everyone but the owner (USERS_FILE)
 
     @property
     def auth_enabled(self) -> bool:
@@ -138,6 +148,7 @@ def load_config(env: Mapping[str, str]) -> Config:
         data_dir=env.get("DATA_DIR", "./data"),
         collection=env.get("ANKI_COLLECTION") or None,
         sync=SyncConfig.from_env(env),
+        ankiweb_endpoint=env.get("ANKIWEB_ENDPOINT") or None,
         redirect_allowlist=redirect_allowlist_from_env(env),
         trust_proxy=env.get("TRUST_PROXY") == "1",
     )
@@ -150,8 +161,15 @@ def load_config(env: Mapping[str, str]) -> Config:
         if not secret_hash.startswith("scrypt$"):
             raise ConfigError("OWNER_SECRET_HASH is not a hash from `python auth.py hash`")
         cfg.public_url, cfg.owner_secret_hash = public_url.rstrip("/"), secret_hash
+        if env.get("USERS_FILE"):
+            try:
+                cfg.users = load_users(env["USERS_FILE"])
+            except UsersFileError as e:
+                raise ConfigError(str(e)) from None
         return cfg
     if env.get("ALLOW_INSECURE_NO_AUTH") == "1":
+        if env.get("USERS_FILE"):
+            raise ConfigError("USERS_FILE needs auth: without it there is no login, so no other users")
         if not is_loopback(host):
             raise ConfigError(f"ALLOW_INSECURE_NO_AUTH is only allowed on a loopback HOST, not {host!r}")
         return cfg
@@ -162,7 +180,7 @@ def load_config(env: Mapping[str, str]) -> Config:
 
 
 class Bridges:
-    """One Bridge per subject. Today only the owner exists; this is the multi-user seam."""
+    """One Bridge per subject: the owner, and the people in the users file."""
 
     def __init__(self, cfg: Config):
         self._cfg = cfg
@@ -184,10 +202,65 @@ class Bridges:
             if subject not in self._bridges:
                 path = self.collection_path(subject)
                 os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-                # AnkiWeb credentials are the owner's; other users get none until per-user storage exists.
-                sync = self._cfg.sync if subject == OWNER_SUBJECT else None
-                self._bridges[subject] = Bridge(path, sync)
+                # The env login is the owner's. Logins saved on the login page are encrypted and
+                # handed over per call, by the token that unlocks them (build_server).
+                self._bridges[subject] = Bridge(path, self._cfg.sync if subject == OWNER_SUBJECT else None)
             return self._bridges[subject]
+
+
+class AnkiWebSetup:
+    """The Anki side of the AnkiWeb fields on the login page (auth.SyncSetup)."""
+
+    def __init__(self, cfg: Config, bridges: Bridges):
+        self._cfg, self._bridges = cfg, bridges
+        self._downloading: set[str] = set()
+        self._lock = threading.Lock()
+
+    def ankiweb_optional(self, subject: str) -> bool:
+        return subject == OWNER_SUBJECT
+
+    def login(self, subject: str, username: str, password: str) -> dict[str, str]:
+        env = self._cfg.sync
+        if subject != OWNER_SUBJECT and env and env.username.strip().lower() == username.lower():
+            raise LoginProblem("That AnkiWeb account is already used by someone else on this server.")
+        try:
+            sync = ankiweb_login(username, password, self._cfg.ankiweb_endpoint)
+        except BridgeError as e:
+            raise LoginProblem(str(e)) from None
+        assert sync.hkey
+        return {"username": sync.username, "hkey": sync.hkey, "endpoint": sync.endpoint or ""}
+
+    def prepare(self, subject: str, credential: dict[str, str]) -> None:
+        """The first download, for someone with no collection here yet. It never replaces one."""
+        path = self._bridges.collection_path(subject)
+        if os.path.exists(path):
+            return
+        with self._lock:
+            if subject in self._downloading:
+                raise LoginProblem("Your collection is being downloaded already. Wait a minute, then log in again.")
+            self._downloading.add(subject)
+        try:
+            print(f"downloading the collection of {subject} from AnkiWeb: {download_new(path, sync_config(credential))}",
+                  file=sys.stderr)
+        except BridgeError as e:
+            raise LoginProblem(f"Downloading your collection from AnkiWeb failed: {e}") from None
+        except Exception:  # noqa: BLE001 - Anki's own errors; the log has the details
+            traceback.print_exc()
+            raise LoginProblem("Downloading your collection from AnkiWeb failed. Try again in a minute.") from None
+        finally:
+            with self._lock:
+                self._downloading.discard(subject)
+
+
+def sync_config(credential: dict[str, str]) -> SyncConfig:
+    """A saved AnkiWeb login (sync key, no password) as core.py uses it."""
+    return SyncConfig(credential["username"], "", credential.get("endpoint") or None, credential["hkey"])
+
+
+NO_ANKIWEB_LOGIN = (
+    "No AnkiWeb login is unlocked for this connection, so nothing was done. Log in to the bridge again "
+    "(in Claude: disconnect and reconnect the Anki connector) and enter your AnkiWeb login on the login page."
+)
 
 
 def transport_security(cfg: Config) -> TransportSecuritySettings:
@@ -214,6 +287,23 @@ def build_server(cfg: Config, authenticator: Authenticator | None = None) -> tup
             raise BridgeError("Not authenticated.")
         return bridges.for_subject(token.subject)
 
+    def syncing_bridge() -> Bridge:
+        """The caller's Bridge for a call that syncs. A login saved on the login page is unlocked by
+        the caller's token; without one there is no write, since a write that never reaches AnkiWeb
+        would not show up on the person's phone."""
+        b = bridge()
+        token = get_access_token()
+        if provider is None or token is None:
+            return b  # dev mode
+        if token.subject == OWNER_SUBJECT and (cfg.sync or not provider.has_vault(OWNER_SUBJECT)):
+            return b  # the owner's env login, or sync off: as before
+        data_key = provider.data_key(token.token)
+        credential = provider.vault_credential(token.subject, data_key) if data_key else None
+        if credential is None:
+            raise BridgeError(NO_ANKIWEB_LOGIN)
+        b.use_sync(sync_config(credential))
+        return b
+
     provider: OwnerProvider | None = None
     kwargs: dict[str, Any] = {}
     route_guards: dict[str, Callable[[ASGIApp], ASGIApp]] = {}
@@ -226,6 +316,7 @@ def build_server(cfg: Config, authenticator: Authenticator | None = None) -> tup
             server_key=derive_server_key(cfg.owner_secret_hash),
             public_url=cfg.public_url,
             resource_url=resource,
+            subject_ok=lambda subject: subject == OWNER_SUBJECT or subject in cfg.users,
         )
         kwargs = dict(
             auth_server_provider=provider,
@@ -253,12 +344,15 @@ def build_server(cfg: Config, authenticator: Authenticator | None = None) -> tup
     )
 
     if provider is not None:
-        handler = make_login_handler(
-            provider,
-            authenticator or OwnerAuthenticator(cfg.owner_secret_hash),
-            LoginLimiter(),
-            client_ip,
-        )
+        assert cfg.owner_secret_hash
+        if authenticator is None:
+            # Without other users, exactly the owner-only login there always was.
+            authenticator = (
+                UsersAuthenticator(cfg.owner_secret_hash, {u.name: u.secret_hash for u in cfg.users.values()})
+                if cfg.users
+                else OwnerAuthenticator(cfg.owner_secret_hash)
+            )
+        handler = make_login_handler(provider, authenticator, LoginLimiter(), client_ip, AnkiWebSetup(cfg, bridges))
         mcp.custom_route("/login", methods=["GET", "POST"])(handler)
 
     def guard(approved: bool) -> None:
@@ -296,7 +390,7 @@ def build_server(cfg: Config, authenticator: Authenticator | None = None) -> tup
     def add_notes(notes: list[NewNote], approved_by_user: bool = False) -> dict[str, Any]:
         """Add notes in one all-or-nothing batch (max 50). Existing decks and note types only. Syncs with AnkiWeb before and after. Requires approved_by_user=true, set only after the user approved these exact cards."""
         guard(approved_by_user)
-        return bridge().add_notes([n.model_dump() for n in notes])
+        return syncing_bridge().add_notes([n.model_dump() for n in notes])
 
     @mcp.tool(annotations=edits)
     @surfaced
@@ -309,13 +403,13 @@ def build_server(cfg: Config, authenticator: Authenticator | None = None) -> tup
     ) -> dict[str, Any]:
         """Change fields (partial) and tags of one note. Cannot change deck or note type, and cannot delete: tag a note 'to-review' instead. Requires approved_by_user=true."""
         guard(approved_by_user)
-        return bridge().update_note(note_id, fields, add_tags, remove_tags)
+        return syncing_bridge().update_note(note_id, fields, add_tags, remove_tags)
 
     @mcp.tool(annotations=adds)
     @surfaced
     def sync() -> dict[str, str]:
         """Normal sync with AnkiWeb. Fails if a full sync is required."""
-        return bridge().sync()
+        return syncing_bridge().sync()
 
     return mcp, provider
 
@@ -325,9 +419,17 @@ def startup_warnings(cfg: Config) -> list[str]:
     out = []
     if not cfg.auth_enabled:
         out.append("running WITHOUT authentication (ALLOW_INSECURE_NO_AUTH=1, loopback only).")
-    owner_collection = Bridges(cfg).collection_path(OWNER_SUBJECT)
+    bridges = Bridges(cfg)
+    owner_collection = bridges.collection_path(OWNER_SUBJECT)
     if not os.path.exists(owner_collection):
-        out.append(f"no collection at {owner_collection}; tools fail until `python bootstrap.py download`.")
+        out.append(
+            f"no collection at {owner_collection}; tools fail until `python bootstrap.py download`, "
+            "or a login that saves the AnkiWeb login."
+        )
+    for name in cfg.users:
+        path = bridges.collection_path(name)
+        if not os.path.exists(path):
+            out.append(f"no collection for {name} yet; it is downloaded when they log in with their AnkiWeb login.")
     return out
 
 

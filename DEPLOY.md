@@ -98,3 +98,42 @@ A changed `OWNER_SECRET_HASH` makes Claude register again; that is expected.
 
 See [tasks/todo-deploy.md](tasks/todo-deploy.md) Tasks 6 and 7 and the README section
 "First real use". Do not run `bootstrap.py upload` on the VPS, ever.
+
+## 8. Encrypt your AnkiWeb login (optional, recommended)
+
+Spec: [SPEC-multi-user.md](SPEC-multi-user.md). After updating (step 5) nothing changes yet: the
+env login keeps working. To move it out of the env file:
+
+1. In Claude, disconnect and reconnect the Anki connector. On the login page, open
+   "AnkiWeb login", enter it, and authorize. Expected: back in Claude, no error.
+2. As `anki`: remove the `ANKIWEB_USER` and `ANKIWEB_PASS` lines from `/srv/anki-bridge/env`.
+3. As root: `systemctl restart anki-bridge`, then call `sync` from Claude. Expected: `synced`.
+
+If step 3 says "No AnkiWeb login is unlocked for this connection", Claude is still using a
+connection from before step 1: repeat step 1.
+
+## 9. Add another person (optional)
+
+First update and restart (step 5) *without* a users file, and check your own connector still
+works.
+
+As `anki`, in `/srv/anki-bridge/app`:
+
+    nix develop --command python auth.py hash alice     # they type their secret; prints [users.alice] ...
+    cp deploy/users.example.toml /srv/anki-bridge/users.toml
+    chmod 600 /srv/anki-bridge/users.toml
+    nano /srv/anki-bridge/users.toml                    # paste the entry (no AnkiWeb login goes here)
+    echo 'USERS_FILE=/srv/anki-bridge/users.toml' >> /srv/anki-bridge/env
+
+Then, as root:
+
+    systemctl restart anki-bridge
+    journalctl -u anki-bridge -n 30 --no-pager          # no "Refusing to start"
+    deploy/check.sh https://anki.panzeilkamp.com
+
+They add `https://anki.panzeilkamp.com/mcp` as a connector in their own Claude, log in with
+username `alice`, open "AnkiWeb login" and enter theirs. That login downloads their collection
+(it can take a minute for a big one); the journal says `downloading the collection of alice`.
+Your login page now has a username field: leave it empty.
+
+To remove someone: delete their table, restart. Their tokens stop working at once.

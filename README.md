@@ -1,7 +1,8 @@
 # anki-claude-bridge
 
 Headless MCP server that lets Claude add and edit notes in my Anki collection,
-syncing through AnkiWeb. Spec and boundaries: [GOALS.md](GOALS.md).
+syncing through AnkiWeb. Spec and boundaries: [GOALS.md](GOALS.md). Other people can use the
+same server with their own collection and AnkiWeb account ([SPEC-multi-user.md](SPEC-multi-user.md)).
 
 ## Dev environment
 
@@ -44,23 +45,48 @@ refuses `ALLOW_INSECURE_NO_AUTH` on anything but a loopback `HOST`.
 | `HOST` / `PORT` | Bind address | `127.0.0.1` / `8000` |
 | `DATA_DIR` | Per-user data and `auth.sqlite3` | `./data` |
 | `ANKI_COLLECTION` | Owner's collection path | `<DATA_DIR>/owner/collection.anki2` |
-| `ANKIWEB_USER` / `ANKIWEB_PASS` | AnkiWeb login; omit to run without sync | unset |
+| `ANKIWEB_USER` / `ANKIWEB_PASS` | Owner's AnkiWeb login, in the clear. Optional: without it, enter it on the login page, where it is stored encrypted (see "AnkiWeb logins"). With neither, sync is off | unset |
 | `REDIRECT_ALLOWLIST` | Comma-separated OAuth redirect rules (`scheme://host[/path]`; no port = any port, for loopback; a path allows only that path) | `/api/mcp/auth_callback` on claude.ai and claude.com, loopback |
 | `TRUST_PROXY` | `1` = client IP from the last `X-Forwarded-For` entry (set behind the reverse proxy) | unset |
+| `USERS_FILE` | TOML file with other people (see "Other people"); mode 600. Unset = owner only | unset |
 
 ## How auth works
 
-The server is its own single-user OAuth 2.1 server. Claude registers itself
+The server is its own OAuth 2.1 server. Claude registers itself
 (dynamic client registration), sends you to `/login`, you enter the owner secret
 once, and Claude receives a 1 hour access token plus a 30 day refresh token.
 Tokens, codes and login links are stored only as hashes; client secrets are
 derived from the owner secret hash and never stored. Failed logins are limited
 to 5 per 15 minutes per IP (25 overall). Details: [SPEC-auth.md](SPEC-auth.md).
 
-Multi-user is not built, but every token carries a `subject`, login goes through
-an `Authenticator`, and tools pick their collection via `Bridges.for_subject`
-(`data/<subject>/`). See "Multi-user readiness" in [GOALS.md](GOALS.md).
-Deliberately not built: user table, signup, per-user AnkiWeb credentials, quotas.
+## AnkiWeb logins
+
+The login page has a collapsed "AnkiWeb login" section. Fill it in once: the server logs in to
+AnkiWeb, keeps only AnkiWeb's sync key (never the password, like Anki desktop), and downloads your
+collection if the server has none yet. The sync key is encrypted (AES-GCM, `vault.py`) under a
+random key that opens only with your login secret or one of your live tokens, which only your
+Claude connector holds. The server's files and backups alone cannot decrypt it, and neither can
+the admin. Later logins unlock it with your secret; you type the AnkiWeb login again only after
+changing your secret or your AnkiWeb password.
+
+A connection made before a login was saved cannot write ("log in again"; in Claude, disconnect
+and reconnect the connector). The owner's `ANKIWEB_*` env vars, if set, win over a saved login.
+
+## Other people
+
+Without `USERS_FILE` the server is the owner's alone, exactly as before. With it, each person in
+the file logs in with their username and their own secret; the owner leaves the username empty
+and uses the owner secret as always. Every token carries its person's `subject`, and tools use
+that person's collection (`data/<name>/collection.anki2`) and saved AnkiWeb login.
+
+    python auth.py hash alice           # they type their secret; prints a [users.alice] entry
+    # paste it into users.toml (template: deploy/users.example.toml), chmod 600, restart
+
+They then log in as `alice` and enter their AnkiWeb login; that first login downloads their
+collection. The file holds no AnkiWeb logins. The server refuses to start if the file is readable
+by others, a name is invalid or `owner`, or it has AnkiWeb keys; two people cannot save the same
+AnkiWeb account. Removing someone and restarting cuts their tokens off. The file is read at
+startup: restart after changing it. Not built: signup, roles, quotas.
 
 ## Status
 
@@ -70,6 +96,9 @@ Deliberately not built: user table, signup, per-user AnkiWeb credentials, quotas
 - Done: running on the VPS at `https://anki.panzeilkamp.com/mcp` (systemd + nginx + Let's
   Encrypt, see [DEPLOY.md](DEPLOY.md)). The Claude connector (web and phone) registers, logs in
   and edits the real collection; real AnkiWeb sync works.
+- Done (offline, not yet deployed): other people via `USERS_FILE`, and AnkiWeb logins saved
+  encrypted from the login page ([SPEC-multi-user.md](SPEC-multi-user.md)). The owner's env login
+  and tokens keep working, checked against a login made by the previously deployed code.
 - Still to watch: AnkiWeb-only behaviour the local server cannot show (login rate limits,
   connections that hang). Look at `journalctl -u anki-bridge` for login errors in daily use.
 
@@ -97,8 +126,9 @@ timeouts, its choice of `FULL_UPLOAD`/`FULL_DOWNLOAD` (the local server only say
 
 ## Safeguards worth knowing
 
-- The collection must exist: run `bootstrap.py download` first. The server never
-  creates an empty one (its reads would report "no duplicates"); tools say so instead.
+- The collection must exist: run `bootstrap.py download` first, or save the AnkiWeb login on the
+  login page (it downloads into an empty place, never over a collection, never uploads). The
+  server never creates an empty one (its reads would report "no duplicates"); tools say so instead.
 - A call that waits more than 3 s for another one (usually an AnkiWeb sync; a stalled
   AnkiWeb request takes ~31 s to fail) answers "busy, try again" (`LOCK_WAIT` in `core.py`).
 - The AnkiWeb login is made once per server process and renewed when AnkiWeb rejects it.
