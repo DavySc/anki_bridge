@@ -269,7 +269,8 @@ def transport_security(cfg: Config) -> TransportSecuritySettings:
     if cfg.public_url:
         u = urlparse(cfg.public_url)
         hosts += [u.netloc]
-        origins += [cfg.public_url, "https://claude.ai", "https://claude.com", "https://www.perplexity.ai", "https://www.perplexity.com"]
+        origins += [cfg.public_url, "https://claude.ai", "https://claude.com", "https://www.perplexity.ai", "https://www.perplexity.com",
+                    "https://enterprise.perplexity.ai", "https://enterprise.perplexity.com"]
     return TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins)
 
 

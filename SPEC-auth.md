@@ -183,6 +183,12 @@ Update: a real Perplexity connector redirects to
 center names, so registration was refused. Both hosts are now allowed (callback path only),
 and both are allowed Origins.
 
+Update 2: Perplexity registers a whole list of redirect URIs at once (one refused URI refuses
+the registration); the next one was `https://enterprise.perplexity.ai/...`. Rules now accept a
+`*.` host (any subdomain, not the domain itself), and the defaults allow the callback path on
+`*.perplexity.ai` and `*.perplexity.com`, https and default port only. Origins have no
+wildcards in the SDK, so www. and enterprise. on both are listed.
+
 ## Open Questions
 
 1. Does the Claude custom-connector flow (especially the phone app) accept

@@ -104,6 +104,8 @@ def test_registration_without_redirect_uris_rejected(provider, redirects):
         "https://claude.com/api/mcp/auth_callback",
         "https://www.perplexity.ai/rest/connections/oauth_callback",
         "https://www.perplexity.com/rest/connections/oauth_callback",
+        "https://enterprise.perplexity.ai/rest/connections/oauth_callback",
+        "https://enterprise.perplexity.com/rest/connections/oauth_callback",
         "http://127.0.0.1:6274/oauth/callback",
         "http://localhost:3000/cb",
         "http://[::1]:5000/cb",
@@ -675,11 +677,33 @@ def test_failed_logins_are_logged_without_secrets(env, caplog):
         "http://www.perplexity.ai/rest/connections/oauth_callback",
         "https://perplexity.com/rest/connections/oauth_callback",
         "https://www.perplexity.com/search/abc",
+        "https://enterprise.perplexity.ai/search/abc",
+        "https://evilperplexity.ai/rest/connections/oauth_callback",
+        "https://perplexity.ai.evil.example/rest/connections/oauth_callback",
+        "https://www.perplexity.ai:8443/rest/connections/oauth_callback",
     ],
 )
 def test_default_allowlist_accepts_only_the_callback_paths(provider, uri):
     with pytest.raises(RegistrationError):
         run(provider.register_client(client(redirects=[uri])))
+
+
+def test_allowlist_wildcard_rule_allows_subdomains_only():
+    path = os.path.join(tempfile.mkdtemp(), "a.sqlite3")
+    p = OwnerProvider(path, server_key=KEY, redirect_allowlist=["https://*.example.org/cb"])
+    for i, ok in enumerate(("https://a.example.org/cb", "https://a.b.example.org/cb")):
+        run(p.register_client(client(client_id=f"c{i}", redirects=[ok])))
+    for bad in ("https://example.org/cb", "https://badexample.org/cb", "https://a.example.org/other"):
+        with pytest.raises(RegistrationError):
+            run(p.register_client(client(redirects=[bad])))
+
+
+def test_perplexity_registers_its_whole_list_at_once(provider):
+    """One refused URI refuses the registration, so all of Perplexity's must pass together."""
+    run(provider.register_client(client(redirects=[
+        f"https://{h}/rest/connections/oauth_callback"
+        for h in ("www.perplexity.ai", "www.perplexity.com", "enterprise.perplexity.ai", "enterprise.perplexity.com")
+    ])))
 
 
 def test_allowlist_rule_with_a_path_pins_that_path():

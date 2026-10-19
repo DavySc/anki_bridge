@@ -61,13 +61,15 @@ OWNER_SUBJECT = "owner"
 USERNAME_OK = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 # Rule = scheme://host[:port][/path]. A rule without a port allows any port, which is only
-# sensible for loopback; a non-loopback rule must match the URI's host exactly. A rule with a
-# path allows only that path: any page on claude.ai that leaked its URL would leak the code.
+# sensible for loopback; a non-loopback rule must match the URI's host exactly, or, for a host
+# `*.example.org`, be any subdomain of it (not example.org itself). A rule with a path allows
+# only that path: any page on claude.ai that leaked its URL would leak the code.
 DEFAULT_REDIRECT_ALLOWLIST = [
     "https://claude.ai/api/mcp/auth_callback",
     "https://claude.com/api/mcp/auth_callback",
-    "https://www.perplexity.ai/rest/connections/oauth_callback",  # Perplexity custom connectors (their docs)
-    "https://www.perplexity.com/rest/connections/oauth_callback",  # what Perplexity actually sends
+    # Perplexity registers one list with www., enterprise. and perhaps more, on .ai and .com.
+    "https://*.perplexity.ai/rest/connections/oauth_callback",
+    "https://*.perplexity.com/rest/connections/oauth_callback",
     "http://127.0.0.1",
     "http://localhost",
     "http://[::1]",
@@ -184,13 +186,19 @@ def is_loopback(host: str) -> bool:
         return False
 
 
+def _host_matches(host: str, rule_host: str) -> bool:
+    if rule_host.startswith("*."):
+        return host.endswith(rule_host[1:])
+    return host == rule_host
+
+
 def _allowed(uri: str, rules: list[str]) -> bool:
     u = urlparse(uri)
     if u.username or u.password or u.fragment or not u.hostname:
         return False
     for rule in rules:
         r = urlparse(rule)
-        if u.scheme != r.scheme or u.hostname != r.hostname:
+        if u.scheme != r.scheme or not _host_matches(u.hostname, r.hostname or ""):
             continue
         if r.path not in ("", "/") and u.path != r.path:
             continue

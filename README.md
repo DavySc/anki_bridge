@@ -46,7 +46,7 @@ refuses `ALLOW_INSECURE_NO_AUTH` on anything but a loopback `HOST`.
 | `DATA_DIR` | Per-user data and `auth.sqlite3` | `./data` |
 | `ANKI_COLLECTION` | Owner's collection path | `<DATA_DIR>/owner/collection.anki2` |
 | `ANKIWEB_USER` / `ANKIWEB_PASS` | Owner's AnkiWeb login, in the clear. Optional: without it, enter it on the login page, where it is stored encrypted (see "AnkiWeb logins"). With neither, sync is off | unset |
-| `REDIRECT_ALLOWLIST` | Comma-separated OAuth redirect rules (`scheme://host[/path]`; no port = any port, for loopback; a path allows only that path) | `/api/mcp/auth_callback` on claude.ai and claude.com, Perplexity's `/rest/connections/oauth_callback` on www.perplexity.ai and www.perplexity.com, loopback |
+| `REDIRECT_ALLOWLIST` | Comma-separated OAuth redirect rules (`scheme://host[/path]`; no port = any port, for loopback; a path allows only that path; host `*.example.org` = any subdomain of it) | `/api/mcp/auth_callback` on claude.ai and claude.com, Perplexity's `/rest/connections/oauth_callback` on any subdomain of perplexity.ai and perplexity.com, loopback |
 | `TRUST_PROXY` | `1` = client IP from the last `X-Forwarded-For` entry (set behind the reverse proxy) | unset |
 | `USERS_FILE` | TOML file with other people (see "Other people"); mode 600. Unset = owner only | unset |
 

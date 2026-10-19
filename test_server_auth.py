@@ -267,7 +267,7 @@ def test_token_for_another_resource_is_refused(served):
     assert a.status_code == 302 and "error=invalid_target" in a.headers["location"]
 
 
-@pytest.mark.parametrize("site", ["https://www.perplexity.ai", "https://www.perplexity.com"])
+@pytest.mark.parametrize("site", ["https://www.perplexity.ai", "https://www.perplexity.com", "https://enterprise.perplexity.ai"])
 def test_a_perplexity_connector_registers_logs_in_and_calls_tools(served, site):
     """Perplexity's custom connectors use their own callback and may send its Origin.
     Their docs say .ai; a real connector redirects to .com."""
