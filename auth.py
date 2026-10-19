@@ -393,10 +393,11 @@ class OwnerProvider:
             )
         return construct_redirect_uri(f"{self.public_url}/login", req=req_id)
 
-    def pending_login(self, req_id: str) -> tuple[str, str] | None:
-        """(client name, redirect host) of a live login request, for the login page to show.
-        Anyone can register a client and send the owner a real login link, so the page says who
-        asks. None if the request is unknown or expired."""
+    def pending_login(self, req_id: str) -> tuple[str, str, str] | None:
+        """(client name, redirect host, redirect origin) of a live login request, for the login page
+        to show (and, the origin, to let its form redirect there). Anyone can register a client and
+        send the owner a real login link, so the page says who asks. None if the request is unknown
+        or expired."""
         rows = self._exec(
             "SELECT p.params, p.expires_at, c.info FROM pending p JOIN clients c USING (client_id)"
             " WHERE p.req_hash = ?",
@@ -407,7 +408,7 @@ class OwnerProvider:
         params, _, info = rows[0]
         name = json.loads(info).get("client_name") or "A client without a name"
         redirect = urlparse(str(AuthorizationParams.model_validate_json(params).redirect_uri))
-        return name, redirect.netloc
+        return name, redirect.netloc, f"{redirect.scheme}://{redirect.netloc}"
 
     def complete_login(self, req_id: str, subject: str, data_key: bytes | None = None) -> str | None:
         """Consume the pending request and return the client's redirect URL with a fresh code.
@@ -841,6 +842,9 @@ _NO_STORE = {
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
 }
+# Chromium applies form-action to the redirect after a submit too, so a login form must also allow
+# the origin of the one redirect_uri its request was validated for, or the browser stays put.
+_ORIGIN_OK = re.compile(r"^https?://[A-Za-z0-9.\-\[\]:]+$")
 
 _PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Anki bridge login</title>
@@ -850,8 +854,12 @@ summary{{margin:.6rem 0;cursor:pointer}}.n{{font-size:.85rem;color:#555}}</style
 <body><h1>Anki bridge</h1>{body}</body></html>"""
 
 
-def _page(body: str, status: int = 200) -> HTMLResponse:
-    return HTMLResponse(_PAGE.format(body=body), status_code=status, headers=_NO_STORE)
+def _page(body: str, status: int = 200, redirect_origin: str = "") -> HTMLResponse:
+    headers = _NO_STORE
+    if _ORIGIN_OK.match(redirect_origin):
+        csp = _NO_STORE["Content-Security-Policy"].replace("form-action 'self'", f"form-action 'self' {redirect_origin}")
+        headers = {**_NO_STORE, "Content-Security-Policy": csp}
+    return HTMLResponse(_PAGE.format(body=body), status_code=status, headers=headers)
 
 
 _ANKIWEB_FIELDS = (
@@ -865,11 +873,11 @@ _ANKIWEB_FIELDS = (
 
 
 def _login_form(
-    req_id: str, who: tuple[str, str], error: str = "", username: str | None = None, ankiweb: bool | None = None
+    req_id: str, who: tuple[str, str, str], error: str = "", username: str | None = None, ankiweb: bool | None = None
 ) -> str:
     """username None: no username field (the owner alone). A string: a username field, prefilled
     with it after a failed attempt. ankiweb None: no AnkiWeb fields; True/False: shown, open or not."""
-    name, host = who
+    name, host, _ = who
     if username is None:
         fields = '<input type="password" name="secret" placeholder="Owner secret" autofocus required>'
     else:
@@ -890,9 +898,9 @@ def _login_form(
     )
 
 
-def _choose_secret_form(req_id: str, who: tuple[str, str], name: str, code: str, ankiweb: bool, error: str = "") -> str:
+def _choose_secret_form(req_id: str, who: tuple[str, str, str], name: str, code: str, ankiweb: bool, error: str = "") -> str:
     """After a valid invite code: the person chooses their own secret (and enters their AnkiWeb login)."""
-    client, host = who
+    client, host, _ = who
     return (
         (f"<p class=e>{error}</p>" if error else "")
         + f"<p>Welcome, <b>{html.escape(name)}</b>. <b>{html.escape(client[:100])}</b> asks for access to your"
@@ -972,14 +980,17 @@ def make_login_handler(
         if who is None:
             return _page("<p class=e>This login link is invalid or has expired. Start again from the app.</p>", 400)
 
+        def page(body: str, status: int = 200) -> HTMLResponse:
+            return _page(body, status, who[2])
+
         if form is None:
-            return _page(_login_form(req_id, who, username="" if asks_username else None, ankiweb=ankiweb_shown))
+            return page(_login_form(req_id, who, username="" if asks_username else None, ankiweb=ankiweb_shown))
 
         ip = client_ip(request)
         ip_key = rate_limit_key(ip)
         if limiter.blocked(ip_key) or limiter.blocked("global", GLOBAL_FAILURE_LIMIT):
             logger.warning("login refused: too many failed attempts (client %r)", ip)
-            return _page("<p class=e>Too many failed attempts. Try again later.</p>", 429)
+            return page("<p class=e>Too many failed attempts. Try again later.</p>", 429)
 
         credentials = {k: str(v) for k, v in form.items() if k in ("username", "secret")}
         subject = authenticator.authenticate(credentials)
@@ -992,11 +1003,11 @@ def make_login_handler(
             if name and code and accepts(name) and provider.invite_valid(name, code):
                 with_ankiweb = sync_setup is not None
                 if "new_secret" not in form:
-                    return _page(_choose_secret_form(req_id, who, name, code, with_ankiweb))
+                    return page(_choose_secret_form(req_id, who, name, code, with_ankiweb))
                 new, again = str(form.get("new_secret", "")), str(form.get("new_secret2", ""))
                 if len(new) < MIN_SECRET or new != again:
                     problem = f"Use at least {MIN_SECRET} characters." if len(new) < MIN_SECRET else "The two secrets differ."
-                    return _page(_choose_secret_form(req_id, who, name, code, with_ankiweb, problem), 400)
+                    return page(_choose_secret_form(req_id, who, name, code, with_ankiweb, problem), 400)
                 if provider.redeem_invite(name, code, hash_secret(new)):
                     logger.info("invite used: %s chose their own secret (client %r)", name, ip)
                     subject, invited, credentials["secret"] = name, True, new
@@ -1005,10 +1016,10 @@ def make_login_handler(
             limiter.hit("global")
             if not asks_username:
                 logger.warning("login failed: wrong secret (client %r)", ip)
-                return _page(_login_form(req_id, who, "Wrong secret.", ankiweb=ankiweb_shown), 401)
+                return page(_login_form(req_id, who, "Wrong secret.", ankiweb=ankiweb_shown), 401)
             username = credentials.get("username", "")
             logger.warning("login failed: wrong username or secret (username %r, client %r)", username[:64], ip)
-            return _page(_login_form(req_id, who, "Wrong username or secret.", username, ankiweb_shown), 401)
+            return page(_login_form(req_id, who, "Wrong username or secret.", username, ankiweb_shown), 401)
         logger.info("login succeeded for %s (client %r)", subject, ip)
         limiter.clear(ip_key)
         data_key = None
@@ -1020,10 +1031,10 @@ def make_login_handler(
                 logger.info("login for %s stopped at the AnkiWeb step: %s", subject, e)
                 username = subject if invited else credentials.get("username", "") if asks_username else None
                 saved = "Your secret is saved: log in with it from now on. " if invited else ""
-                return _page(_login_form(req_id, who, saved + html.escape(str(e)), username, True), 400)
+                return page(_login_form(req_id, who, saved + html.escape(str(e)), username, True), 400)
         url = provider.complete_login(req_id, subject, data_key)
         if url is None:
-            return _page("<p class=e>This login link is invalid or has expired. Start again from the app.</p>", 400)
+            return page("<p class=e>This login link is invalid or has expired. Start again from the app.</p>", 400)
         return RedirectResponse(url, status_code=302, headers=_NO_STORE)
 
     return login

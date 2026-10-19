@@ -288,6 +288,26 @@ def test_dcr_rejects_foreign_redirect_uris(served):
     assert r.status_code == 400 and r.json()["error"] == "invalid_redirect_uri"
 
 
+@pytest.mark.parametrize("redirect", [REDIRECT, "https://www.perplexity.ai/rest/connections/oauth_callback",
+                                      "http://127.0.0.1:6274/oauth/callback"])
+def test_the_login_form_may_redirect_to_its_client(served, redirect):
+    """Chromium applies form-action to the 302 after the submit: with 'self' alone the browser
+    stayed on the login page, and the next click found the link used up (Perplexity, 2026-10-19)."""
+    tc, _, _ = served
+    reg = tc.post("/register", json={"redirect_uris": [redirect], "token_endpoint_auth_method": "none", "client_name": "t"})
+    a = tc.get("/authorize", params={"response_type": "code", "client_id": reg.json()["client_id"], "redirect_uri": redirect,
+                                     "code_challenge": "x" * 43, "code_challenge_method": "S256", "resource": PUBLIC + "/mcp"},
+               follow_redirects=False)
+    req = parse_qs(urlparse(a.headers["location"]).query)["req"][0]
+    page = tc.get("/login", params={"req": req})
+    u = urlparse(redirect)
+    directives = dict(d.strip().split(" ", 1) for d in page.headers["content-security-policy"].split(";"))
+    assert directives["form-action"] == f"'self' {u.scheme}://{u.netloc}"
+    wrong = tc.post("/login", data={"req": req, "secret": "wrong"}, follow_redirects=False)
+    assert f"{u.scheme}://{u.netloc}" in wrong.headers["content-security-policy"]  # the form shown again
+    assert "form-action 'self';" in tc.get("/login", params={"req": "nope"}).headers["content-security-policy"]
+
+
 def test_client_secret_is_not_in_the_auth_database(served):
     tc, cfg, prov = served
     t, cid, csec = oauth_login(tc)

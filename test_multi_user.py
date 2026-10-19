@@ -85,10 +85,10 @@ OLD_FORM = (  # only the last sentence changed since, from "connect Claude to th
 
 def test_without_users_file_the_login_form_is_the_old_one_plus_the_ankiweb_section():
     """The owner's form is unchanged except for the collapsed AnkiWeb section (encrypted logins)."""
-    form = auth._login_form("R", ("test", "claude.ai"), ankiweb=False)
+    form = auth._login_form("R", ("test", "claude.ai", "https://claude.ai"), ankiweb=False)
     button = "<button>Authorize</button></form>"
     assert form == OLD_FORM.replace(button, auth._ANKIWEB_FIELDS.format(open="") + button)
-    assert auth._login_form("R", ("test", "claude.ai")) == OLD_FORM  # no sync setup: exactly the old one
+    assert auth._login_form("R", ("test", "claude.ai", "https://claude.ai")) == OLD_FORM  # no sync setup: exactly the old one
 
 
 def test_without_users_file_nothing_changes():

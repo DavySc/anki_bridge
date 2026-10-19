@@ -189,6 +189,13 @@ the registration); the next one was `https://enterprise.perplexity.ai/...`. Rule
 `*.perplexity.ai` and `*.perplexity.com`, https and default port only. Origins have no
 wildcards in the SDK, so www. and enterprise. on both are listed.
 
+Update 3: with a real connector (Chromium-based browser) every login ended on "This login link is
+invalid or has expired". The log showed `POST /login` 302, no `/token` call, and the same form
+posted again seconds later: the browser had refused to follow the 302, because Chromium applies
+the login page's `form-action 'self'` to the redirect after the submit, and the next submit found
+the link used up. The login page's `form-action` now also allows the origin of the one
+redirect_uri its request was validated for.
+
 ## Open Questions
 
 1. Does the Claude custom-connector flow (especially the phone app) accept
