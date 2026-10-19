@@ -135,19 +135,35 @@ class OwnerAuthenticator:
 
 class UsersAuthenticator:
     """The owner plus other people. An empty username is the owner, with the owner's secret as
-    before; any other username must be a configured name with that person's own secret."""
+    before; any other username must be a configured name with that person's own secret: the one
+    in the users file, or (without one there) the one they chose with an invite code."""
 
     asks_username = True
 
-    def __init__(self, owner_hash: str, user_hashes: Mapping[str, str]):
+    def __init__(
+        self,
+        owner_hash: str,
+        user_hashes: Mapping[str, str | None],
+        chosen_secret: Callable[[str], str | None] = lambda name: None,
+    ):
         self._owner = owner_hash
         self._users = {n: h for n, h in user_hashes.items() if USERNAME_OK.match(n) and n != OWNER_SUBJECT}
+        self._chosen = chosen_secret
         # An unknown name costs one scrypt like a known one, so timing does not reveal names.
         self._dummy = hash_secret(secrets.token_urlsafe(16))
 
+    def accepts_invite(self, name: str) -> bool:
+        """Invites are for people who choose their own secret (no secret_hash in the users file)."""
+        return name in self._users and self._users[name] is None
+
     def authenticate(self, credentials: dict[str, str]) -> str | None:
         name = credentials.get("username", "").strip().lower()
-        stored = self._users.get(name) if name else self._owner
+        if not name:
+            stored = self._owner
+        elif name in self._users:
+            stored = self._users[name] or self._chosen(name)
+        else:
+            stored = None
         secret = credentials.get("secret", "")
         ok = verify_secret(secret, stored or self._dummy)
         if not (ok and stored and secret):
@@ -186,6 +202,8 @@ def _allowed(uri: str, rules: list[str]) -> bool:
 
 
 PENDING_TTL = 600  # seconds a login page stays valid
+INVITE_TTL = 7 * 24 * 3600  # an invite code is good for one use within a week
+MIN_SECRET = 12
 CODE_TTL = 300  # seconds an authorization code stays valid
 ACCESS_TTL = 3600  # 1 hour
 REFRESH_TTL = 30 * 24 * 3600  # 30 days
@@ -278,6 +296,7 @@ class OwnerProvider:
         for table in ("codes", "access_tokens", "refresh_tokens"):
             if "wrapped_key" not in [row[1] for row in self._db.execute(f"PRAGMA table_info({table})")]:
                 self._db.execute(f"ALTER TABLE {table} ADD COLUMN wrapped_key BLOB")
+        _create_people_tables(self._db)
         # One AnkiWeb login per person, encrypted. account_tag (keyed hash of the AnkiWeb email)
         # stops two people from saving the same account without storing the email in the clear.
         self._db.execute(
@@ -654,6 +673,61 @@ class OwnerProvider:
         plain = vault.unseal(data_key, rows[0][0], f"ankiweb|{subject}") if rows else None
         return json.loads(plain) if plain else None
 
+    # ---- secrets people chose themselves, with an invite code ---------------------
+
+    def chosen_secret(self, subject: str) -> str | None:
+        rows = self._exec("SELECT secret_hash FROM chosen_secrets WHERE subject = ?", (subject,))
+        return rows[0][0] if rows else None
+
+    def invite_valid(self, subject: str, code: str) -> bool:
+        rows = self._exec("SELECT code_hash, expires_at FROM invites WHERE subject = ?", (subject,))
+        return bool(rows) and rows[0][1] >= self._now() and hmac.compare_digest(rows[0][0], _invite_digest(code))
+
+    def redeem_invite(self, subject: str, code: str, secret_hash: str) -> bool:
+        """Use up the invite and store the secret the person chose. False if it is no longer valid."""
+        with self._tx() as db:
+            used = db.execute(
+                "DELETE FROM invites WHERE subject = ? AND code_hash = ? AND expires_at >= ?",
+                (subject, _invite_digest(code), self._now()),
+            ).rowcount
+            if used == 1:
+                db.execute("INSERT OR REPLACE INTO chosen_secrets (subject, secret_hash) VALUES (?, ?)", (subject, secret_hash))
+        return used == 1
+
+
+# ---- invites --------------------------------------------------------------------
+# A person without a secret_hash in the users file chooses their own secret: the admin hands them
+# a one-time code (`python auth.py invite NAME`), they enter it as their secret once, and the login
+# page asks for a secret of their own. The server hashes it; nobody else ever sees it.
+
+
+def _create_people_tables(db: sqlite3.Connection) -> None:
+    db.execute("CREATE TABLE IF NOT EXISTS invites (subject TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at REAL NOT NULL)")
+    db.execute("CREATE TABLE IF NOT EXISTS chosen_secrets (subject TEXT PRIMARY KEY, secret_hash TEXT NOT NULL)")
+
+
+def _invite_digest(code: str) -> str:
+    """Codes are 120 random bits, so SHA-256 is enough. Dashes, spaces and case do not matter."""
+    return _sha256("".join(code.split()).replace("-", "").upper())
+
+
+def create_invite(db_path: str, subject: str, now: Callable[[], float] = time.time) -> tuple[str, float]:
+    """A fresh one-time code for `subject`, replacing any earlier one. Returns (code, expires_at).
+    Works on the server's database while it runs."""
+    raw = base64.b32encode(secrets.token_bytes(15)).decode()
+    code = "-".join(raw[i : i + 6] for i in range(0, len(raw), 6))
+    expires = now() + INVITE_TTL
+    os.close(os.open(db_path, os.O_CREAT | os.O_WRONLY, 0o600))
+    db = sqlite3.connect(db_path)
+    try:
+        _create_people_tables(db)
+        db.execute("INSERT OR REPLACE INTO invites (subject, code_hash, expires_at) VALUES (?, ?, ?)",
+                   (subject, _invite_digest(code), expires))
+        db.commit()
+    finally:
+        db.close()
+    return code, expires
+
 
 # ---- login page ----------------------------------------------------------------
 
@@ -807,6 +881,26 @@ def _login_form(
     )
 
 
+def _choose_secret_form(req_id: str, who: tuple[str, str], name: str, code: str, ankiweb: bool, error: str = "") -> str:
+    """After a valid invite code: the person chooses their own secret (and enters their AnkiWeb login)."""
+    client, host = who
+    return (
+        (f"<p class=e>{error}</p>" if error else "")
+        + f"<p>Welcome, <b>{html.escape(name)}</b>. <b>{html.escape(client[:100])}</b> asks for access to your"
+        f" Anki collection; afterwards your browser goes to <b>{html.escape(host)}</b>.</p>"
+        f"<p>Choose your own secret, at least {MIN_SECRET} characters. You type it with your username at every"
+        " login. Nobody else knows it, not even the server's admin, so keep it in a password manager.</p>"
+        f'<form method="post"><input type="hidden" name="req" value="{html.escape(req_id)}">'
+        f'<input type="hidden" name="invite" value="{html.escape(code)}">'
+        f'<input name="username" value="{html.escape(name)}" readonly autocomplete="username">'
+        f'<input type="password" name="new_secret" placeholder="Your new secret" autocomplete="new-password"'
+        f' minlength="{MIN_SECRET}" required autofocus>'
+        '<input type="password" name="new_secret2" placeholder="The same again" autocomplete="new-password" required>'
+        + (_ANKIWEB_FIELDS.format(open=" open") if ankiweb else "")
+        + "<button>Save and authorize</button></form>"
+    )
+
+
 def forwarded_client_ip(request: Request) -> str:
     """Client IP behind one trusted reverse proxy (nginx or Caddy): the last X-Forwarded-For entry,
     which the proxy appended itself. Earlier entries are client-supplied and ignored."""
@@ -867,7 +961,7 @@ def make_login_handler(
             req_id = request.query_params.get("req", "")
         who = provider.pending_login(req_id) if req_id else None
         if who is None:
-            return _page("<p class=e>This login link is invalid or has expired. Start again from Claude.</p>", 400)
+            return _page("<p class=e>This login link is invalid or has expired. Start again from the app.</p>", 400)
 
         if form is None:
             return _page(_login_form(req_id, who, username="" if asks_username else None, ankiweb=ankiweb_shown))
@@ -880,6 +974,23 @@ def make_login_handler(
 
         credentials = {k: str(v) for k, v in form.items() if k in ("username", "secret")}
         subject = authenticator.authenticate(credentials)
+        invited = False
+        if subject is None and asks_username:
+            # Not their secret, but maybe their invite code (typed as the secret, then carried along).
+            name = credentials.get("username", "").strip().lower()
+            code = str(form.get("invite") or credentials.get("secret", ""))
+            accepts = getattr(authenticator, "accepts_invite", lambda n: False)
+            if name and code and accepts(name) and provider.invite_valid(name, code):
+                with_ankiweb = sync_setup is not None
+                if "new_secret" not in form:
+                    return _page(_choose_secret_form(req_id, who, name, code, with_ankiweb))
+                new, again = str(form.get("new_secret", "")), str(form.get("new_secret2", ""))
+                if len(new) < MIN_SECRET or new != again:
+                    problem = f"Use at least {MIN_SECRET} characters." if len(new) < MIN_SECRET else "The two secrets differ."
+                    return _page(_choose_secret_form(req_id, who, name, code, with_ankiweb, problem), 400)
+                if provider.redeem_invite(name, code, hash_secret(new)):
+                    logger.info("invite used: %s chose their own secret (client %r)", name, ip)
+                    subject, invited, credentials["secret"] = name, True, new
         if subject is None:
             limiter.hit(ip_key)
             limiter.hit("global")
@@ -898,23 +1009,53 @@ def make_login_handler(
                 data_key = await run_in_threadpool(ankiweb_step, subject, credentials.get("secret", ""), ankiweb_user, ankiweb_pass)
             except LoginProblem as e:
                 logger.info("login for %s stopped at the AnkiWeb step: %s", subject, e)
-                username = credentials.get("username", "") if asks_username else None
-                return _page(_login_form(req_id, who, html.escape(str(e)), username, True), 400)
+                username = subject if invited else credentials.get("username", "") if asks_username else None
+                saved = "Your secret is saved: log in with it from now on. " if invited else ""
+                return _page(_login_form(req_id, who, saved + html.escape(str(e)), username, True), 400)
         url = provider.complete_login(req_id, subject, data_key)
         if url is None:
-            return _page("<p class=e>This login link is invalid or has expired. Start again from Claude.</p>", 400)
+            return _page("<p class=e>This login link is invalid or has expired. Start again from the app.</p>", 400)
         return RedirectResponse(url, status_code=302, headers=_NO_STORE)
 
     return login
 
 
-def main(argv: list[str], prompt: Callable[[str], str] = getpass.getpass) -> str:
-    """`hash`: the owner's line for the env file. `hash NAME`: a [users.NAME] entry for the users file."""
-    if len(argv) not in (1, 2) or argv[0] != "hash":
-        sys.exit("usage: python auth.py hash [username]")
+def invite(name: str, env: Mapping[str, str] = os.environ) -> str:
+    """`invite NAME`: a one-time code with which NAME chooses their own secret at the login page."""
+    from users import UsersFileError, load_users  # users.py imports this module
+
+    if not env.get("USERS_FILE"):
+        sys.exit("Set USERS_FILE (and DATA_DIR) as the server has them.")
+    try:
+        user = load_users(env["USERS_FILE"]).get(name)
+    except UsersFileError as e:
+        sys.exit(str(e))
+    if user is None:
+        sys.exit(f"Add [users.{name}] to {env['USERS_FILE']} first, and restart the service.")
+    if user.secret_hash:
+        sys.exit(f"[users.{name}] has a secret_hash, which wins over a chosen secret. Remove it first, and restart.")
+    db_path = os.path.join(env.get("DATA_DIR", "./data"), "auth.sqlite3")  # as server.py
+    code, expires = create_invite(db_path, name)
+    until = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(expires))
+    return (
+        f"Invite for {name}, for one use until {until}:\n\n    {code}\n\n"
+        f"At the login page they enter the username {name} and this code as their secret, then choose\n"
+        "their own secret. A new invite replaces this one (for a forgotten secret, send a new one)."
+    )
+
+
+def main(argv: list[str], prompt: Callable[[str], str] = getpass.getpass, env: Mapping[str, str] = os.environ) -> str:
+    """`hash`: the owner's line for the env file. `hash NAME`: a [users.NAME] entry with a secret you
+    choose for them. `invite NAME`: a one-time code with which they choose their own (usual)."""
+    usage = "usage: python auth.py hash [username] | invite username"
+    if not argv or argv[0] not in ("hash", "invite") or len(argv) > 2 or (argv[0] == "invite" and len(argv) != 2):
+        sys.exit(usage)
     name = argv[1] if len(argv) == 2 else None
     if name is not None and (name == OWNER_SUBJECT or not USERNAME_OK.match(name)):
         sys.exit(f"A username is lowercase letters, digits, - or _ (at most 32), and not {OWNER_SUBJECT!r}.")
+    if argv[0] == "invite":
+        assert name is not None
+        return invite(name, env)
     first = prompt("Owner secret: " if name is None else f"Secret for {name}: ")
     if len(first) < 12:
         sys.exit("Use at least 12 characters.")

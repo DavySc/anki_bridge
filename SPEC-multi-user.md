@@ -23,21 +23,38 @@ Builds on the seams from [SPEC-auth.md](SPEC-auth.md) ("Multi-user seams").
 - `auth.sqlite3` gains a column and a table, added in place. The previous code still runs on the
   upgraded file (checked), so rolling back needs nothing.
 
-Non-goals: signup or invite flow, roles, admin UI, quotas, protection against someone who
+Non-goals: self-service signup, roles, admin UI, quotas, protection against someone who
 controls the *running* server (it necessarily sees a login while using it).
 
 ## Design
 
 ### Users file
 
-`USERS_FILE=/srv/anki-bridge/users.toml` (unset = owner only), mode 600. Only usernames and
-login secret hashes:
+`USERS_FILE=/srv/anki-bridge/users.toml` (unset = owner only), mode 600. Usually just names:
 
+    [users.luca]                               # chooses his own secret with an invite
     [users.alice]
-    secret_hash = 'scrypt$32768$8$...'        # python auth.py hash alice
+    secret_hash = 'scrypt$32768$8$...'         # optional: a secret the admin chose (python auth.py hash alice)
 
 The server refuses to start when the file is readable by others, a name is not
 `[a-z0-9][a-z0-9_-]{0,31}` or is `owner`, a key is unknown, or it holds AnkiWeb keys.
+
+### Invites
+
+Nobody hashes anything by hand, and the admin never learns a person's secret (which would let
+them open that person's saved AnkiWeb login).
+
+- `python auth.py invite luca` (with `USERS_FILE`, `DATA_DIR`) stores the SHA-256 of a fresh
+  one-time code (120 random bits, `XXXXXX-XXXXXX-XXXXXX-XXXXXX`) in `auth.sqlite3` (`invites`),
+  valid 7 days, replacing an earlier one, and prints the code. Only for entries without
+  `secret_hash` (a file `secret_hash` wins). No restart needed.
+- At the login page, username `luca` and the code as secret show a second page: choose a secret
+  (12+ characters, twice) and the AnkiWeb login. On submit the code is checked again and used up,
+  the scrypt hash of the new secret is stored (`chosen_secrets`), and the login continues.
+- A wrong, used or expired code is a failed login (same rate limits). A bad choice re-asks and
+  leaves the code valid. If the AnkiWeb step fails after that, the secret is kept and the page says
+  to log in with it. A new invite resets a forgotten secret; the old AnkiWeb vault no longer opens,
+  so the person enters their AnkiWeb login once more.
 
 ### Login
 
@@ -115,7 +132,7 @@ previously deployed code serve tool calls and refresh under the new code, with a
 2. Optional, to encrypt your own login: in Claude, disconnect and reconnect the connector, log in,
    open "AnkiWeb login" and enter it. Then remove `ANKIWEB_USER`/`ANKIWEB_PASS` from the env file
    and restart. Check `sync` from Claude.
-3. Another person: `nix develop --command python auth.py hash alice` (they type their secret),
-   paste into `/srv/anki-bridge/users.toml` (`chmod 600`), set `USERS_FILE` in the env file,
-   restart. They add the connector, log in as `alice` and enter their AnkiWeb login; the first
-   login downloads their collection.
+3. Another person: add `[users.luca]` to `/srv/anki-bridge/users.toml` (`chmod 600`), set
+   `USERS_FILE` in the env file, restart, run `python auth.py invite luca` and send the code. They
+   add the connector, log in as `luca` with the code, choose their secret and enter their AnkiWeb
+   login; that login downloads their collection.

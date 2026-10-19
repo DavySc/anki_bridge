@@ -79,19 +79,22 @@ the file logs in with their username and their own secret; the owner leaves the 
 and uses the owner secret as always. Every token carries its person's `subject`, and tools use
 that person's collection (`data/<name>/collection.anki2`) and saved AnkiWeb login.
 
-    python auth.py hash alice           # they type their secret; prints a [users.alice] entry
-    # paste it into users.toml (template: deploy/users.example.toml), chmod 600, restart
+    # users.toml (template: deploy/users.example.toml), chmod 600, then restart:
+    [users.alice]
 
-Someone who is not at your terminal can make the hash on their own computer (Python 3 only),
-so their secret never leaves it, and send you what it prints as their `secret_hash`:
+    python auth.py invite alice         # with USERS_FILE and DATA_DIR set; prints a one-time code
 
-    python3 -c "import base64,getpass,hashlib,os;s=getpass.getpass('Secret: ');salt=os.urandom(16);d=hashlib.scrypt(s.encode(),salt=salt,n=2**15,r=8,p=1,maxmem=2**26,dklen=32);b=lambda x:base64.b64encode(x).decode();print(f'scrypt\$32768\$8\$1\${b(salt)}\${b(d)}')"
+Send them the code (valid once, for a week). At the login page they enter their username and the
+code as the secret; the page then asks them to choose their own secret, which the server hashes,
+and their AnkiWeb login. Nobody else ever knows their secret, so nobody else can open their saved
+AnkiWeb login. Forgotten secret: send a new invite (they re-enter their AnkiWeb login once).
+`python auth.py hash alice` still prints a `secret_hash` entry for a secret you choose for them,
+but then you know it.
 
 Clients: Claude (custom connector) and Perplexity (custom remote connector: Streamable HTTP,
 OAuth 2.0, no client ID needed). Both register themselves and use the same login page.
 
-They then log in as `alice` and enter their AnkiWeb login; that first login downloads their
-collection. The file holds no AnkiWeb logins. The server refuses to start if the file is readable
+Their first login downloads their collection. The file holds no secrets or AnkiWeb logins. The server refuses to start if the file is readable
 by others, a name is invalid or `owner`, or it has AnkiWeb keys; two people cannot save the same
 AnkiWeb account. Removing someone and restarting cuts their tokens off. The file is read at
 startup: restart after changing it. Not built: signup, roles, quotas.

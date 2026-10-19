@@ -1,12 +1,11 @@
 # Copy to /srv/anki-bridge/users.toml, chmod 600, owner anki, and set USERS_FILE to it in the env
-# file. Names only here: put real values on the VPS, never in this repository.
+# file. Restart the service after adding or removing someone.
 # The owner is not listed: they stay configured by OWNER_SECRET_HASH in the env file.
-# Restart the service after every change.
 #
-# No AnkiWeb logins here: each person enters theirs on the login page, and the server keeps only
-# AnkiWeb's sync key, encrypted so that it opens only with their own secret.
+# No secrets and no AnkiWeb logins here. Each person chooses their own secret with a one-time
+# invite code, and enters their AnkiWeb login on the login page (kept encrypted, opens only with
+# their secret). After adding someone and restarting:
+#   nix develop --command python auth.py invite alice      (prints the code to send them)
 
 # One table per person. The name is their login username: lowercase letters, digits, - or _.
-# Start it with: nix develop --command python auth.py hash alice   (they type their secret)
 [users.alice]
-secret_hash = 'REPLACE_ME'

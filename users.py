@@ -1,8 +1,10 @@
 """People besides the owner, from the users file (USERS_FILE). No Anki or MCP code here.
 
 The owner is not in this file: they stay configured by the env vars. A name in this file is
-that person's username and subject. The file holds only login secret hashes: each person enters
-their AnkiWeb login on the login page, and it is stored encrypted (vault.py), never here.
+that person's username and subject. An entry without `secret_hash` (the usual case) means the
+person chooses their own secret, with an invite code from `python auth.py invite NAME`; the
+server keeps that hash in its database. Each person enters their AnkiWeb login on the login
+page, and it is stored encrypted (vault.py), never here.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ class UsersFileError(Exception):
 @dataclass(frozen=True)
 class User:
     name: str
-    secret_hash: str
+    secret_hash: str | None = None  # None: they choose their own (invite)
 
 
 def load_users(path: str) -> dict[str, User]:
@@ -58,8 +60,11 @@ def load_users(path: str) -> dict[str, User]:
         unknown = sorted(set(entry) - {"secret_hash"})
         if unknown:
             raise UsersFileError(f"{where}: unknown key(s) {unknown}")
-        secret_hash = entry.get("secret_hash", "")
-        if not isinstance(secret_hash, str) or not secret_hash.startswith("scrypt$"):
-            raise UsersFileError(f"{where}: secret_hash must come from `python auth.py hash {name}`")
+        secret_hash = entry.get("secret_hash")
+        if secret_hash is not None and (not isinstance(secret_hash, str) or not secret_hash.startswith("scrypt$")):
+            raise UsersFileError(
+                f"{where}: secret_hash must come from `python auth.py hash {name}`, or leave it out "
+                f"so they choose their own secret (`python auth.py invite {name}`)"
+            )
         users[name] = User(name, secret_hash)
     return users

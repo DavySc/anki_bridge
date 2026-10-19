@@ -348,7 +348,9 @@ def build_server(cfg: Config, authenticator: Authenticator | None = None) -> tup
         if authenticator is None:
             # Without other users, exactly the owner-only login there always was.
             authenticator = (
-                UsersAuthenticator(cfg.owner_secret_hash, {u.name: u.secret_hash for u in cfg.users.values()})
+                UsersAuthenticator(
+                    cfg.owner_secret_hash, {u.name: u.secret_hash for u in cfg.users.values()}, provider.chosen_secret
+                )
                 if cfg.users
                 else OwnerAuthenticator(cfg.owner_secret_hash)
             )

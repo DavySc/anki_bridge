@@ -117,25 +117,26 @@ connection from before step 1: repeat step 1.
 First update and restart (step 5) *without* a users file, and check your own connector still
 works.
 
-As `anki`, in `/srv/anki-bridge/app`:
+As root:
 
-    nix develop --command python auth.py hash alice     # they type their secret; prints [users.alice] ...
-    # or they run the python3 one-liner from the README on their own computer and send you the hash
-    cp deploy/users.example.toml /srv/anki-bridge/users.toml
-    chmod 600 /srv/anki-bridge/users.toml
-    nano /srv/anki-bridge/users.toml                    # paste the entry (no AnkiWeb login goes here)
-    echo 'USERS_FILE=/srv/anki-bridge/users.toml' >> /srv/anki-bridge/env
-
-Then, as root:
-
+    sudo -u anki cp /srv/anki-bridge/app/deploy/users.example.toml /srv/anki-bridge/users.toml
+    sudo -u anki chmod 600 /srv/anki-bridge/users.toml
+    sudo -u anki nano /srv/anki-bridge/users.toml       # one line per person: [users.alice]
+    echo 'USERS_FILE=/srv/anki-bridge/users.toml' | sudo -u anki tee -a /srv/anki-bridge/env
     systemctl restart anki-bridge
     journalctl -u anki-bridge -n 30 --no-pager          # no "Refusing to start"
-    deploy/check.sh https://anki.panzeilkamp.com
+
+Then make their invite code (as `anki`, with the server's paths):
+
+    sudo -iu anki bash -c 'cd app && USERS_FILE=/srv/anki-bridge/users.toml DATA_DIR=/srv/anki-bridge/data nix develop --command python auth.py invite alice'
+
+It prints a code like `ABCDEF-GHIJKL-MNOPQR-STUVWX`, good once within 7 days. Send it to them.
+A new invite (same command) replaces it, also for a forgotten secret; no restart needed.
 
 They add `https://anki.panzeilkamp.com/mcp` as a connector in their own Claude (custom connector)
 or Perplexity (Plugins or Customize, Connectors: Add custom, Connector, Add MCP connector, Remote;
-Streamable HTTP, OAuth 2.0, no client ID), log in with username `alice`, open "AnkiWeb login" and
-enter theirs. That login downloads their collection
+Streamable HTTP, OAuth 2.0, no client ID), log in with username `alice` and the code as the secret, then choose
+their own secret and enter their AnkiWeb login on the next page. That login downloads their collection
 (it can take a minute for a big one); the journal says `downloading the collection of alice`.
 Your login page now has a username field: leave it empty.
 

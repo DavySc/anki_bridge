@@ -406,3 +406,49 @@ def test_the_server_starts_no_full_sync_but_the_download_into_nothing():
         assert "full_upload_or_download" not in text and "upload=True" not in text, name
     with open(os.path.join(here, "server.py")) as f:
         assert "from bootstrap import download_new\n" in f.read()
+
+
+# ---- an invite: choosing a secret and saving the AnkiWeb login on one page -------------------------
+
+
+@pytest.fixture()
+def luca_site(fake_ankiweb, monkeypatch):
+    monkeypatch.setattr(Bridge, "_sync", lambda self, col: f"synced as {self.sync_cfg.username}" if self.sync_cfg else "sync not configured")
+    cfg = load_config(multi_env("[users.luca]\n"))
+    app, prov = make_app(cfg)
+    with TestClient(app, base_url=PUBLIC) as tc:
+        yield tc, cfg, fake_ankiweb
+
+
+def test_the_choose_page_asks_for_the_ankiweb_login_too(luca_site):
+    tc, cfg, _ = luca_site
+    code = auth.create_invite(os.path.join(cfg.data_dir, "auth.sqlite3"), "luca")[0]
+    _, req = login_page(tc)
+    r = tc.post("/login", data={"req": req, "username": "luca", "secret": code})
+    assert "<details open>" in r.text and 'name="ankiweb_user"' in r.text
+
+
+def test_luca_chooses_a_secret_saves_his_ankiweb_login_and_writes(luca_site):
+    tc, cfg, calls = luca_site
+    code = auth.create_invite(os.path.join(cfg.data_dir, "auth.sqlite3"), "luca")[0]
+    secret = "luca chose this himself"
+    fields = {"new_secret": secret, "new_secret2": secret, "ankiweb_user": "luca@x", "ankiweb_pass": "right"}
+    r = oauth_login(tc, username="luca", secret=code, extra=fields)[0]
+    assert r.status_code == 200, r.text
+    assert calls["download"]  # his collection came down at this login
+    note = {**NOTE, "deck": "Downloaded for luca@x"}
+    res = tool(tc, "add_notes", {"notes": [note], "approved_by_user": True}, r.json()["access_token"])
+    assert "synced as luca@x" in decks(res)
+    assert oauth_login(tc, username="luca", secret=secret)[0].status_code == 200  # unlocks it, nothing typed
+
+
+def test_a_failed_ankiweb_step_after_choosing_keeps_the_new_secret(luca_site):
+    tc, cfg, _ = luca_site
+    code = auth.create_invite(os.path.join(cfg.data_dir, "auth.sqlite3"), "luca")[0]
+    secret = "luca chose this himself"
+    fields = {"new_secret": secret, "new_secret2": secret, "ankiweb_user": "luca@x", "ankiweb_pass": "wrong"}
+    r = oauth_login(tc, username="luca", secret=code, extra=fields)[0]
+    assert r.status_code == 400 and "Your secret is saved" in r.text and "did not accept" in r.text
+    assert 'value="luca"' in r.text
+    r = oauth_login(tc, username="luca", secret=secret, extra={"ankiweb_user": "luca@x", "ankiweb_pass": "right"})[0]
+    assert r.status_code == 200, r.text

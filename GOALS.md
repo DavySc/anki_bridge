@@ -62,8 +62,10 @@ single-user server. The rules that made this a contained change still hold:
   that person's secret or their live tokens (vault.py). The admin cannot read it.
   Mine may stay in the env file until I move it.
 
-Not built, on purpose: signup or invite flow, roles, admin UI, quotas, encrypted
-credential storage.
+People choose their own secret with a one-time invite code from me
+(`auth.py invite NAME`); I never know it.
+
+Not built, on purpose: self-service signup, roles, admin UI, quotas.
 
 ## Out of scope
 

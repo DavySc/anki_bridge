@@ -276,6 +276,7 @@ def test_the_owner_only_server_uses_the_owner_only_authenticator(monkeypatch):
 
 def test_a_valid_users_file_loads():
     assert load_users(users_file(alice_entry())) == {"alice": User("alice", ALICE_HASH)}
+    assert load_users(users_file("[users.luca]\n")) == {"luca": User("luca", None)}  # chooses his own
     assert load_users(users_file("")) == {}
 
 
@@ -286,7 +287,6 @@ def test_a_valid_users_file_loads():
         ("[users.Alice]\nsecret_hash = 'scrypt$1'\n", "lowercase"),
         ("[users.'../x']\nsecret_hash = 'scrypt$1'\n", "lowercase"),
         ("[users.alice]\nsecret_hash = 'plain'\n", "auth.py hash alice"),
-        ("[users.alice]\n", "auth.py hash alice"),
         ("[users.alice]\nsecret_hash = 'scrypt$1'\nankiweb_user = 'a@x'\nankiweb_pass = 'pw'\n", "do not go in this file"),
         ("[users.alice]\nsecret_hash = 'scrypt$1'\nankiweb_password = 'x'\n", "unknown key"),
         ("[users.alice]\nsecret_hash = 1\n", "auth.py hash alice"),
@@ -333,7 +333,123 @@ def test_hash_for_a_user_prints_a_users_file_entry():
     assert auth.main(["hash"], prompt=lambda _: "a long enough secret").startswith("OWNER_SECRET_HASH='scrypt$")
 
 
-@pytest.mark.parametrize("argv", [["hash", "owner"], ["hash", "Alice"], ["hash", "a/b"], ["hash", "a", "b"], ["nope"]])
+@pytest.mark.parametrize(
+    "argv", [["hash", "owner"], ["hash", "Alice"], ["hash", "a/b"], ["hash", "a", "b"], ["nope"], ["invite"], ["invite", "owner"]]
+)
 def test_hash_refuses_bad_usernames(argv):
     with pytest.raises(SystemExit):
         auth.main(argv, prompt=lambda _: "a long enough secret")
+
+
+# ---- invites: a person chooses their own secret --------------------------------------------------
+
+LUCA_SECRET = "luca chose this himself"
+
+
+@pytest.fixture()
+def invited(monkeypatch):
+    """Owner, alice (secret_hash in the file) and luca (no secret_hash: he chooses his own)."""
+    monkeypatch.setattr(server.AnkiWebSetup, "ankiweb_optional", lambda self, s: True)  # AnkiWeb: test_vault.py
+    cfg = load_config(multi_env(alice_entry() + "[users.luca]\n"))
+    seed_collection(cfg, subject="luca", deck="Luca deck")
+    app, prov = make_app(cfg)
+    with TestClient(app, base_url=PUBLIC) as tc:
+        yield tc, cfg, prov
+
+
+def invite_for(cfg, name="luca", **kw):
+    return auth.create_invite(os.path.join(cfg.data_dir, "auth.sqlite3"), name, **kw)[0]
+
+
+def choose(tc, code, new=LUCA_SECRET, again=None, username="luca", extra=None):
+    """One POST with the code as the secret and the chosen secret, as the second page sends it."""
+    fields = {"new_secret": new, "new_secret2": new if again is None else again, **(extra or {})}
+    return oauth_login(tc, username=username, secret=code, extra=fields)[0]
+
+
+def test_an_invite_code_leads_to_choosing_a_secret(invited):
+    tc, cfg, _ = invited
+    code = invite_for(cfg)
+    _, req = login_page(tc)
+    r = tc.post("/login", data={"req": req, "username": "Luca", "secret": code})
+    assert r.status_code == 200 and 'name="new_secret"' in r.text and 'name="new_secret2"' in r.text
+    assert 'value="luca" readonly' in r.text and f'name="invite" value="{code}"' in r.text
+
+
+def test_luca_chooses_his_secret_and_uses_it_from_then_on(invited):
+    tc, cfg, prov = invited
+    code = invite_for(cfg)
+    r = choose(tc, code)
+    assert r.status_code == 200, r.text
+    assert "Luca deck" in decks(tool(tc, "list_decks", token=r.json()["access_token"]))
+    assert oauth_login(tc, username="luca", secret=LUCA_SECRET)[0].status_code == 200
+    assert oauth_login(tc, username="luca", secret=code)[0].status_code == 401  # used up
+    stored = prov.chosen_secret("luca")
+    assert stored.startswith("scrypt$") and auth.verify_secret(LUCA_SECRET, stored)
+    raw = open(os.path.join(cfg.data_dir, "auth.sqlite3"), "rb").read()
+    assert LUCA_SECRET.encode() not in raw and code.encode() not in raw
+
+
+@pytest.mark.parametrize("new, again, words", [("short", "short", "at least 12"), (LUCA_SECRET, "something else!", "differ")])
+def test_a_bad_choice_is_asked_again_and_the_invite_stays_good(invited, new, again, words):
+    tc, cfg, _ = invited
+    code = invite_for(cfg)
+    r = choose(tc, code, new, again)
+    assert r.status_code == 400 and words in r.text and 'name="new_secret"' in r.text
+    assert choose(tc, code).status_code == 200
+
+
+def test_the_code_works_without_dashes_and_in_any_case(invited):
+    tc, cfg, _ = invited
+    code = invite_for(cfg)
+    assert choose(tc, code.replace("-", "").lower()).status_code == 200
+
+
+def test_an_expired_code_does_not_even_show_the_choose_page(invited):
+    tc, cfg, _ = invited
+    code = invite_for(cfg, now=lambda: 0)
+    _, req = login_page(tc)
+    r = tc.post("/login", data={"req": req, "username": "luca", "secret": code})
+    assert r.status_code == 401 and 'name="new_secret"' not in r.text
+
+
+def test_wrong_expired_or_replaced_codes_are_failed_logins(invited):
+    tc, cfg, _ = invited
+    old = invite_for(cfg)
+    new = invite_for(cfg)  # replaces the first
+    assert choose(tc, old).status_code == 401
+    expired = invite_for(cfg, now=lambda: 0)
+    assert choose(tc, expired).status_code == 401
+    assert choose(tc, new).status_code == 401  # replaced by the expired one
+    for _ in range(2):
+        assert choose(tc, "AAAAAA-BBBBBB-CCCCCC-DDDDDD").status_code == 401
+    assert choose(tc, invite_for(cfg)).status_code == 429  # five failures from this address
+
+
+def test_invites_are_only_for_people_without_a_secret_hash(invited):
+    tc, cfg, _ = invited
+    code = invite_for(cfg, "alice")
+    assert choose(tc, code, username="alice").status_code == 401
+    assert choose(tc, invite_for(cfg, OWNER_SUBJECT), username="").status_code == 401
+
+
+def test_a_new_invite_replaces_a_forgotten_secret(invited):
+    tc, cfg, _ = invited
+    assert choose(tc, invite_for(cfg)).status_code == 200
+    assert choose(tc, invite_for(cfg), new="luca's second secret").status_code == 200
+    assert oauth_login(tc, username="luca", secret=LUCA_SECRET)[0].status_code == 401
+    assert oauth_login(tc, username="luca", secret="luca's second secret")[0].status_code == 200
+
+
+def test_invite_command_checks_the_users_file_and_prints_a_working_code(invited):
+    tc, cfg, _ = invited
+    e = {"USERS_FILE": multi_env(alice_entry() + "[users.luca]\n")["USERS_FILE"], "DATA_DIR": cfg.data_dir}
+    out = auth.main(["invite", "luca"], env=e)
+    code = out.split("\n")[2].strip()
+    assert "for one use until" in out and choose(tc, code).status_code == 200
+    for name, words in (("bob", "Add [users.bob]"), ("alice", "has a secret_hash")):
+        with pytest.raises(SystemExit) as ex:
+            auth.main(["invite", name], env=e)
+        assert words in str(ex.value)
+    with pytest.raises(SystemExit, match="USERS_FILE"):
+        auth.main(["invite", "luca"], env={})

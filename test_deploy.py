@@ -59,18 +59,16 @@ def test_env_example_leaves_other_people_off():
     assert "#USERS_FILE=/srv/anki-bridge/users.toml" in read("env.example")
 
 
-def test_users_example_is_refused_as_is_and_loads_once_filled_in():
-    from users import UsersFileError, load_users
+def test_users_example_loads_and_holds_no_secrets():
+    from users import load_users
 
     path = os.path.join(tempfile.mkdtemp(), "users.toml")
     with open(path, "w") as f:
         f.write(read("users.example.toml"))
     os.chmod(path, 0o600)
-    with pytest.raises(UsersFileError):
-        load_users(path)
-    with open(path, "w") as f:
-        f.write(read("users.example.toml").replace("REPLACE_ME", hash_secret("x")))
-    assert list(load_users(path)) == ["alice"]
+    users = load_users(path)
+    assert list(users) == ["alice"] and users["alice"].secret_hash is None  # she chooses her own (invite)
+    assert "secret_hash =" not in read("users.example.toml") and "ankiweb_pass" not in read("users.example.toml")
 
 
 def test_service_and_nginx_use_the_port_from_the_env_file():
